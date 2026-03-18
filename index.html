@@ -30,6 +30,20 @@ SCRIPTS = {
             }
         ]
     },
+    "search": {
+        "description": "Semantic & fuzzy search for large text files (no dependencies)",
+        "url": BASE_URL + "cli/search",
+        "args": [
+            {
+                "name": "query",
+                "description": "The phrase or concept to search for"
+            },
+            {
+                "name": "file",
+                "description": "Path to the .txt file to search"
+            }
+        ]
+    },
     "doc2txt": {
         "description": "Convert an EPUB file to TXT (uses mutool, pandoc, or Python fallback)",
         "url": BASE_URL + "cli/doc2txt",

@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+import os
+import sys
+import math
+import re
+import heapq
+from collections import Counter
+
+# A basic list of English stop words to improve semantic focus
+STOP_WORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", 
+    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", 
+    "by", "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for", "from", 
+    "further", "had", "has", "have", "having", "he", "he'd", "he'll", "he's", "her", "here", 
+    "hers", "herself", "him", "himself", "his", "how", "i", "i'd", "i'll", "i'm", "i've", "if", 
+    "in", "into", "is", "it", "it's", "its", "itself", "let's", "me", "more", "most", "my", 
+    "myself", "nor", "of", "on", "once", "only", "or", "other", "ought", "our", "ours", "ourselves", 
+    "out", "over", "own", "same", "she", "she'd", "she'll", "she's", "should", "so", "some", 
+    "such", "than", "that", "that's", "the", "their", "theirs", "them", "themselves", "then", 
+    "there", "there's", "these", "they", "they'd", "they'll", "they're", "they've", "this", 
+    "those", "through", "to", "too", "under", "until", "up", "very", "was", "we", "we'd", 
+    "we'll", "we're", "we've", "were", "what", "what's", "when", "when's", "where", "where's", 
+    "which", "while", "who", "who's", "whom", "why", "why's", "with", "would", "you", "you'd", 
+    "you'll", "you're", "you've", "your", "yours", "yourself", "yourselves"
+}
+
+def basic_stem(word):
+    """A very basic stemming function to group similar word forms."""
+    if len(word) <= 3:
+        return word
+    if word.endswith('ing'): return word[:-3]
+    if word.endswith('ly'): return word[:-2]
+    if word.endswith('ed'): return word[:-2]
+    if word.endswith('es'): return word[:-2]
+    if word.endswith('s'): return word[:-1]
+    return word
+
+def tokenize(text):
+    """Extract semantic tokens (lowercase, no stop words, stemmed)."""
+    words = re.findall(r'[a-z0-9]+', text.lower())
+    return [basic_stem(w) for w in words if w not in STOP_WORDS]
+
+def build_idf(filepath):
+    """Pass 1: Build Inverse Document Frequency (IDF) to weigh rare words higher."""
+    df = Counter()
+    total_paragraphs = 0
+    
+    for para in read_paragraphs(filepath):
+        total_paragraphs += 1
+        # Use set to count a word only once per paragraph
+        unique_words = set(tokenize(para))
+        for w in unique_words:
+            df[w] += 1
+            
+    # Calculate IDF: log( N / (df + 1) )
+    idf = {w: math.log((total_paragraphs) / (freq + 1)) + 1 for w, freq in df.items()}
+    return idf
+
+def get_vector(text, idf_dict):
+    """Convert text into a TF-IDF vector."""
+    tokens = tokenize(text)
+    if not tokens:
+        return {}
+    
+    tf = Counter(tokens)
+    vec = {}
+    for w, count in tf.items():
+        # Term Frequency * Inverse Document Frequency
+        vec[w] = (count / len(tokens)) * idf_dict.get(w, 1.0)
+        
+    # Normalize vector for cosine similarity
+    norm = math.sqrt(sum(v*v for v in vec.values())) or 1.0
+    return {w: v/norm for w, v in vec.items()}
+
+def cosine_sim(vec1, vec2):
+    """Compute cosine similarity between two vectors."""
+    common = set(vec1.keys()) & set(vec2.keys())
+    return sum(vec1[w] * vec2[w] for w in common)
+
+def read_paragraphs(filepath):
+    """Yield paragraphs from a file with error handling for large/weird files."""
+    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+        paragraph = []
+        for line in f:
+            if line.strip() == '':
+                if paragraph:
+                    yield ' '.join(paragraph).strip()
+                    paragraph = []
+            else:
+                paragraph.append(line.strip())
+        if paragraph:
+            yield ' '.join(paragraph).strip()
+
+def levenshtein_ratio(s1, s2):
+    """Optimized Levenshtein distance using only two rows of memory."""
+    if s1 == s2: return 1.0
+    if not s1 or not s2: return 0.0
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1, 1):
+        curr_row = [i] + [0] * len(s2)
+        for j, c2 in enumerate(s2, 1):
+            cost = 0 if c1 == c2 else 1
+            curr_row[j] = min(prev_row[j] + 1,      # deletion
+                              curr_row[j-1] + 1,    # insertion
+                              prev_row[j-1] + cost) # substitution
+        prev_row = curr_row
+
+    distance = prev_row[-1]
+    return 1.0 - (distance / max(len(s1), len(s2)))
+
+# --- Smart Color Detection ---
+def supports_color():
+    """
+    Returns True if the running system's terminal supports ANSI escape sequences.
+    """
+    # Check if the output is being redirected to a file or pipe
+    if not sys.stdout.isatty():
+        return False
+
+    # Check for the NO_COLOR standard (https://no-color.org/)
+    if "NO_COLOR" in os.environ:
+        return False
+
+    # Windows 10+ supports ANSI, but older versions might need help.
+    # On Unix-like systems, we check the TERM variable.
+    if os.name == 'nt':
+        # Modern Windows 10/11 supports ANSI if processed correctly.
+        # We return True and hope for the best, or check version.
+        return "TERM" in os.environ or os.environ.get("ANSICON") is not None
+    
+    return os.environ.get("TERM") not in (None, "dumb")
+
+# Global flag
+COLOR_ENABLED = supports_color()
+
+def highlight_fuzzy(text, raw_query_words, threshold=0.75):
+    """Highlight words in text, but only if the terminal supports it."""
+    def repl(match):
+        word = match.group(0)
+        word_lower = word.lower()
+        for q in raw_query_words:
+            if levenshtein_ratio(word_lower, q) >= threshold:
+                # If colors are supported, use them. 
+                # Otherwise, use [BRACKETS] or nothing.
+                if COLOR_ENABLED:
+                    return f"\033[93m{word}\033[0m"
+                else:
+                    return f"**{word}**" # Simple markdown-style bold as fallback
+        return word
+    return re.sub(r'\b[A-Za-z0-9]+\b', repl, text)
+
+def search(query, filepath, top_k=5, fuzzy_threshold=0.75):
+    print("\nIndexing document for semantic weights (Pass 1)...")
+    idf_dict = build_idf(filepath)
+    
+    query_vec = get_vector(query, idf_dict)
+    raw_query_words = re.findall(r'[a-z0-9]+', query.lower())
+    
+    # Min-heap to keep memory footprint tiny on huge files
+    top_results_heap = []
+    tie_breaker = 0 # Prevents heapq from comparing strings if scores are identical
+
+    print("Searching document (Pass 2)...")
+    for paragraph in read_paragraphs(filepath):
+        para_vec = get_vector(paragraph, idf_dict)
+        if not para_vec:
+            continue
+            
+        score = cosine_sim(query_vec, para_vec)
+        
+        if score > 0:
+            if len(top_results_heap) < top_k:
+                heapq.heappush(top_results_heap, (score, tie_breaker, paragraph))
+                tie_breaker += 1
+            else:
+                # If current score is better than the lowest score in our top K
+                if score > top_results_heap[0][0]:
+                    heapq.heappushpop(top_results_heap, (score, tie_breaker, paragraph))
+                    tie_breaker += 1
+
+    # Sort the heap highest-score-first
+    top_results_heap.sort(reverse=True)
+    
+    results = []
+    for score, _, paragraph in top_results_heap:
+        highlighted = highlight_fuzzy(paragraph, raw_query_words, fuzzy_threshold)
+        results.append((score, highlighted))
+    return results
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python search.py \"<query>\" <file>")
+        sys.exit(1)
+
+    query = sys.argv[1]
+    filepath = sys.argv[2]
+    
+    results = search(query, filepath)
+
+    if not results:
+        print("\nNo matching results found.")
+        return
+
+    print("\n--- Top results ---\n")
+    for idx, (score, r) in enumerate(results, 1):
+        print(f"[{idx}] (Match Score: {score:.3f})\n{r}\n")
+
+if __name__ == "__main__":
+    main()
