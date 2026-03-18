@@ -1,0 +1,65 @@
+import subprocess
+import platform
+import os
+import re
+
+def get_thermal_data():
+    os_name = platform.system()
+    results = []
+
+    try:
+        if os_name == "Linux":
+            # 1. Check thermal zones (CPU/Package)
+            thermal_path = "/sys/class/thermal/"
+            if os.path.exists(thermal_path):
+                for zone in os.listdir(thermal_path):
+                    if zone.startswith("thermal_zone"):
+                        try:
+                            with open(os.path.join(thermal_path, zone, "type"), "r") as f:
+                                label = f.read().strip()
+                            with open(os.path.join(thermal_path, zone, "temp"), "r") as f:
+                                temp = int(f.read().strip()) / 1000.0
+                            results.append(f"{label}: {temp:.1f}°C")
+                        except: continue
+
+        elif os_name == "Windows":
+            # Windows uses WMI. Note: Many BIOS/Motherboards do not report this to WMI.
+            # We use PowerShell to query MSAcpi_ThermalZoneTemperature
+            cmd = ["powershell", "Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature | Select-Object -Property CurrentTemperature"]
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+            # Temperature is in tenths of Kelvin
+            temps = re.findall(r"(\d+)", output)
+            for t in temps:
+                celsius = (int(t) / 10.0) - 273.15
+                results.append(f"ThermalZone: {celsius:.1f}°C")
+            
+            if not results:
+                results.append("No WMI thermal data found (often restricted by BIOS).")
+
+        elif os_name == "Darwin":  # macOS
+            # macOS is very restrictive. powermetrics is the built-in way but requires sudo.
+            # We try to get battery temp as a fallback if not sudo.
+            cmd = "sudo powermetrics -n 1 --samplers smc | grep -i 'CPU die temperature'"
+            try:
+                output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode()
+                results.append(output.strip())
+            except:
+                results.append("macOS thermal data requires 'sudo' or isn't accessible via standard CLI.")
+
+        # --- Generic GPU Check (NVIDIA) ---
+        try:
+            gpu_cmd = ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"]
+            gpu_temp = subprocess.check_output(gpu_cmd, stderr=subprocess.DEVNULL).decode().strip()
+            results.append(f"NVIDIA GPU: {gpu_temp}.0°C")
+        except:
+            pass
+
+    except Exception as e:
+        results.append(f"Error fetching data: {str(e)}")
+
+    return "\n".join(results) if results else "No sensors detected."
+
+if __name__ == "__main__":
+    print(f"\n--- Thermal Sensors ---")
+    print(get_thermal_data())
+    print()
