@@ -9,16 +9,26 @@ import tempfile
 import os
 import shlex
 
-BASE_URL = "https://karlo.observer/"
+BASE_URL = "https://karlo.observer/cli/"
 
 SCRIPTS = {
     "sysinfo": {
         "description": "Show basic system information",
-        "url": BASE_URL + "cli/sysinfo"
+        "url": BASE_URL + "sysinfo"
+    },
+    "drivers": {
+        "description": "Show installed drivers and their versions",
+        "url": BASE_URL + "drivers",
+        "args": [
+            {
+                "name": "filter",
+                "description": "Optional: Filter results by name (e.g., 'nvidia' or 'network')"
+            }
+        ]
     },
     "largest": {
         "description": "Show largest files in a directory (recursively)",
-        "url": BASE_URL + "cli/largest",
+        "url": BASE_URL + "largest",
         "args": [
             {
                 "name": "path",
@@ -32,7 +42,7 @@ SCRIPTS = {
     },
     "search": {
         "description": "Fuzzy search for large text files",
-        "url": BASE_URL + "cli/search",
+        "url": BASE_URL + "search",
         "args": [
             {
                 "name": "file",
@@ -46,7 +56,7 @@ SCRIPTS = {
     },
     "doc2txt": {
         "description": "Convert an EPUB file to TXT (uses mutool, pandoc, or Python fallback)",
-        "url": BASE_URL + "cli/doc2txt",
+        "url": BASE_URL + "doc2txt",
         "args": [
             {
                 "name": "epub_file",
@@ -56,7 +66,7 @@ SCRIPTS = {
     },
     "bundle": {
         "description": "Bundle a directory structure and file contents into a single text file",
-        "url": BASE_URL + "cli/bundle",
+        "url": BASE_URL + "bundle",
         "args": [
             {
                 "name": "output_file",
@@ -113,8 +123,8 @@ def print_help():
     print("\nInteractive mode (active):")
     print("  type a script name, 'help [script]', or 'exit'.")
     print("Direct script execution:")
-    print("  Linux/macOS: curl -s https://karlo.observer/cli/ | python3 - <script>")
-    print("  Windows:     curl.exe -s https://karlo.observer/cli/ | python3 - <script>\n")
+    print(f"  Linux/macOS: curl -s {BASE_URL} | python3 - <script>")
+    print(f"  Windows:     curl.exe -s {BASE_URL} | python3 - <script>\n")
 
 def main():
     # Direct script execution if arguments are given
