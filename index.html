@@ -193,10 +193,10 @@ def main():
                         print(f"\n{RED}[-] No help available for unknown script '{script_name}'{RESET}\n")
                     else:
                         print(f"\n{CYAN}=== {script_name} ==={RESET}")
-                        print(f"{info.get('description','')}\n")
+                        print(f"{info.get('description','')}")
                         args = info.get("args", [])
                         if args:
-                            print(f"{YELLOW}Arguments:{RESET}")
+                            print(f"\n{YELLOW}Arguments:{RESET}")
                             for arg in args:
                                 print(f"  {GREEN}{arg.get('name',''):<15}{RESET} : {arg.get('description','')}")
                         print()
