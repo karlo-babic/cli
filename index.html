@@ -95,7 +95,7 @@ def run_script(name, args=None):
 def print_help():
     print("\nScripts:")
     for name, info in SCRIPTS.items():
-        print(f"{name:<12} - {info.get('description','')}")
+        print(f" {name:<10} - {info.get('description','')}")
     print("\nInteractive: type a script name, 'help [script]', or 'exit'.")
     print("Direct:")
     print("  Linux/macOS: curl -s https://karlo.observer/cli/ | python3 - <script>")
