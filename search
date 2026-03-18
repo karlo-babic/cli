@@ -153,7 +153,7 @@ def highlight_fuzzy(text, raw_query_words, threshold=0.75):
     return re.sub(r'\b[A-Za-z0-9]+\b', repl, text)
 
 def search(query, filepath, top_k=5, fuzzy_threshold=0.75):
-    print("\nIndexing document for semantic weights (Pass 1)...")
+    print("\nBuilding idf weights (Pass 1)...")
     idf_dict = build_idf(filepath)
     
     query_vec = get_vector(query, idf_dict)
