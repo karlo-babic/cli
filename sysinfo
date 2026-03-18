@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+
+import os
+import platform
+import subprocess
+
+
+def run_command(cmd):
+    try:
+        env = os.environ.copy()
+        env["LC_ALL"] = "C"  # force standard locale
+        return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, env=env).decode().strip()
+    except Exception:
+        return None
+
+
+def get_cpu_info():
+    cpu = {}
+    cpu["model"] = run_command("lscpu | grep 'Model name' | cut -d: -f2").strip() if run_command("which lscpu") else platform.processor()
+    cpu["cores"] = os.cpu_count()
+    cpu["arch"] = platform.machine()
+    return cpu
+
+
+def get_ram_info():
+    meminfo = {}
+    try:
+        with open("/proc/meminfo") as f:
+            data = f.read()
+        total = int([x for x in data.splitlines() if "MemTotal" in x][0].split()[1])
+        available = int([x for x in data.splitlines() if "MemAvailable" in x][0].split()[1])
+        meminfo["total_mb"] = total // 1024
+        meminfo["available_mb"] = available // 1024
+    except Exception:
+        pass
+    return meminfo
+
+
+def get_gpu_info():
+    gpu = run_command("lspci | grep -i 'vga\\|3d\\|2d'")
+    return gpu or "Not available"
+
+
+def get_disk_info():
+    import os
+    import shutil
+
+    disks = []
+
+    # Always check / and /home
+    for path in ["/", "/home"]:
+        try:
+            usage = shutil.disk_usage(path)
+            disks.append({
+                "filesystem": path,
+                "size": f"{usage.total // (1024**3)}G",
+                "used": f"{usage.used // (1024**3)}G",
+                "avail": f"{usage.free // (1024**3)}G",
+                "use%": f"{int(usage.used / usage.total * 100)}%",
+                "mount": path,
+            })
+        except Exception:
+            pass
+
+    # Check mounted subdirectories in /media and /mnt
+    for base in ["/media", "/mnt"]:
+        if os.path.exists(base):
+            for name in os.listdir(base):
+                full_path = os.path.join(base, name)
+                if os.path.ismount(full_path):
+                    try:
+                        usage = shutil.disk_usage(full_path)
+                        disks.append({
+                            "filesystem": full_path,
+                            "size": f"{usage.total // (1024**3)}G",
+                            "used": f"{usage.used // (1024**3)}G",
+                            "avail": f"{usage.free // (1024**3)}G",
+                            "use%": f"{int(usage.used / usage.total * 100)}%",
+                            "mount": full_path,
+                        })
+                    except Exception:
+                        pass
+
+    return disks
+
+
+def get_os_info():
+    return {
+        "system": platform.system(),
+        "release": platform.release(),
+        "version": platform.version(),
+        "hostname": platform.node()
+    }
+
+
+def print_section(title):
+    print(f"\n=== {title} ===")
+
+
+def main():
+    print_section("OS")
+    os_info = get_os_info()
+    for k, v in os_info.items():
+        print(f"{k.capitalize():<12}: {v}")
+
+    print_section("CPU")
+    cpu = get_cpu_info()
+    for k, v in cpu.items():
+        print(f"{k.capitalize():<12}: {v}")
+
+    print_section("RAM")
+    ram = get_ram_info()
+    for k, v in ram.items():
+        print(f"{k.capitalize():<12}: {v} MB")
+
+    print_section("GPU")
+    gpu = get_gpu_info()
+    print(gpu)
+
+    print_section("Disks")
+    disks = get_disk_info()
+    for d in disks:
+        print(f"{d['filesystem']} ({d['mount']})")
+        print(f"  Size: {d['size']}, Used: {d['used']}, Available: {d['avail']}, Usage: {d['use%']}")
+    
+    print()
+
+
+def run(args=None):
+    main()
+
+if __name__ == "__main__":
+    main()

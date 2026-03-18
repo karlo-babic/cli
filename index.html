@@ -1,0 +1,161 @@
+### Usage ### <p>Linux/macOS: <code style="user-select: all;">curl -s https://karlo.observer/cli/ | python3</code></p><p>Windows: <code style="user-select: all;">curl.exe -s https://karlo.observer/cli/ | python3</code></p> <!--
+
+#!/usr/bin/env python3
+
+import sys
+import urllib.request
+import subprocess
+import tempfile
+import os
+import shlex
+
+BASE_URL = "https://karlo.observer/"
+
+SCRIPTS = {
+    "sysinfo": {
+        "description": "Show basic system information",
+        "url": BASE_URL + "cli/sysinfo"
+    },
+    "doc2txt": {
+        "description": "Convert an EPUB file to TXT (uses mutool, pandoc, or Python fallback)",
+        "url": BASE_URL + "cli/doc2txt",
+        "args": [
+            {
+                "name": "epub_file",
+                "description": "Path to the EPUB file to convert"
+            }
+        ]
+    },
+    "bundle": {
+        "description": "Bundle a directory structure and file contents into a single text file (useful for LLM context)",
+        "url": BASE_URL + "cli/bundle",
+        "args": [
+            {
+                "name": "output_file",
+                "description": "Path where the bundled text file will be saved"
+            },
+            {
+                "name": "root_dir",
+                "description": "Path to the source directory to scan"
+            },
+            {
+                "name": "extensions",
+                "description": "Optional: Specific extensions to include (e.g., .py .js). If omitted, uses default exclusion list."
+            }
+        ]
+    },
+}
+
+# ANSI colors are disabled on Windows cmd for compatibility
+if os.name == "nt":
+    RED = GREEN = YELLOW = BLUE = RESET = ""
+else:
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    RESET = "\033[0m"
+
+def run_script(name, args=None):
+    if name not in SCRIPTS:
+        print(f"Unknown script: {name}")
+        return
+
+    args = args or []
+    script_url = SCRIPTS[name]["url"]
+
+    # Download the script to a temporary file
+    with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".py") as tmp:
+        try:
+            with urllib.request.urlopen(script_url) as response:
+                tmp.write(response.read().decode())
+            tmp.flush()
+        except Exception as e:
+            print(f"Failed to fetch script: {e}")
+            return
+
+        # Execute the downloaded script with forwarded arguments
+        cmd = ["python3", tmp.name] + args
+        subprocess.run(cmd)
+
+def print_help():
+    print("\nScripts:")
+    for name, info in SCRIPTS.items():
+        print(f"{name:<12} - {info.get('description','')}")
+    print("\nInteractive: type a script name, 'help [script]', or 'exit'.")
+    print("Direct:")
+    print("  Linux/macOS: curl -s https://karlo.observer/cli/ | python3 - <script>")
+    print("  Windows:     curl.exe -s https://karlo.observer/cli/ | python3 - <script>\n")
+
+def main():
+    # Direct script execution if arguments are given
+    if len(sys.argv) > 1:
+        script_name = sys.argv[1]
+        script_args = sys.argv[2:]
+        run_script(script_name, script_args)
+        return
+
+    print("\n=== Remote Python Script Environment ===")
+
+    print_help()
+
+    use_input = sys.stdin.isatty()
+
+    if not use_input:
+        try:
+            if os.name == "nt":
+                tty_in = open("CON", "r")
+            else:
+                tty_in = open("/dev/tty", "r")
+        except Exception:
+            tty_in = sys.stdin
+
+    while True:
+        try:
+            if use_input:
+                inp = input(f"{GREEN}cli>{RESET} ").strip()
+            else:
+                print(f"{GREEN}cli>{RESET} ", end="", flush=True)
+                inp = tty_in.readline()
+                if not inp:
+                    continue
+                inp = inp.strip()
+
+            if inp.lower() in ("exit", "quit"):
+                print("Exiting.\n")
+                break
+
+            if inp.lower().startswith("help"):
+                parts = shlex.split(inp)
+                if len(parts) == 1:
+                    print_help()
+                else:
+                    script_name = parts[1]
+                    info = SCRIPTS.get(script_name)
+                    if not info:
+                        print(f"No help available for unknown script '{script_name}'")
+                    else:
+                        print(f"\n{script_name} - {info.get('description','')}")
+                        args = info.get("args", [])
+                        if args:
+                            print("Arguments:")
+                            for arg in args:
+                                print(f"  {arg.get('name','')} : {arg.get('description','')}")
+                        print()
+                continue
+
+            parts = shlex.split(inp)
+            if not parts:
+                continue
+
+            script_name, *script_args = parts
+            run_script(script_name, script_args)
+
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting.\n")
+            break
+
+if __name__ == "__main__":
+    main()
+
+# -->

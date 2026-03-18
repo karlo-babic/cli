@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""
+Bundle: A CLI tool to flatten a codebase into a single text file.
+Usage: python bundle.py <output_file> <root_dir> [.ext1 .ext2 ...]
+"""
+
+import os
+import sys
+from datetime import datetime
+
+# ---------------- CONFIG ----------------
+# Directories we always skip
+IGNORED_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"
+}
+
+# Extensions we skip ONLY if no specific extensions are provided as arguments
+IGNORED_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico",
+    ".exe", ".dll", ".so", ".dylib",
+    ".zip", ".tar", ".gz", ".rar",
+    ".pdf", ".mp4", ".mp3", ".bak"
+}
+
+MAX_FILE_LINES = 10000  # truncation limit
+# ----------------------------------------
+
+
+def is_valid_file(filepath, allowed_extensions):
+    _, ext = os.path.splitext(filepath)
+    ext = ext.lower()
+
+    if allowed_extensions:
+        # If specific extensions were provided, ONLY allow those
+        return ext in allowed_extensions
+    else:
+        # Otherwise, allow everything EXCEPT the ignored list
+        return ext not in IGNORED_EXTENSIONS
+
+
+def collect_files(root_dir, allowed_extensions):
+    file_paths = []
+
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        # filter directories in-place
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+
+        for filename in filenames:
+            full_path = os.path.join(dirpath, filename)
+
+            if not is_valid_file(full_path, allowed_extensions):
+                continue
+
+            rel_path = os.path.relpath(full_path, root_dir)
+            rel_path = rel_path.replace("\\", "/")  # normalize
+
+            file_paths.append((rel_path, full_path))
+
+    return sorted(file_paths)
+
+
+def read_file_with_limit(filepath):
+    lines = []
+    truncated = False
+
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= MAX_FILE_LINES:
+                    truncated = True
+                    break
+                lines.append(line)
+    except Exception as e:
+        return f"[ERROR READING FILE: {e}]\n", False
+
+    content = "".join(lines)
+
+    if truncated:
+        content += "\n[FILE TRUNCATED: exceeds max line limit]\n"
+
+    return content, truncated
+
+
+def write_output(root_dir, files, output_file):
+    try:
+        with open(output_file, "w", encoding="utf-8") as out:
+
+            # -------- GLOBAL HEADER --------
+            out.write("===== CODEBASE EXPORT =====\n")
+            out.write(f"ROOT: {os.path.abspath(root_dir)}\n")
+            out.write(f"TOTAL FILES: {len(files)}\n")
+            out.write(f"GENERATED: {datetime.now().isoformat()}\n")
+            out.write("===========================\n\n")
+
+            # -------- FILE INDEX --------
+            out.write("===== FILE INDEX =====\n")
+            for i, (rel_path, _) in enumerate(files, 1):
+                out.write(f"{i}. {rel_path}\n")
+            out.write("======================\n\n")
+
+            # -------- FILE CONTENTS --------
+            for rel_path, full_path in files:
+                content, truncated = read_file_with_limit(full_path)
+
+                out.write("===== FILE START =====\n")
+                out.write(f"PATH: {rel_path}\n")
+                out.write("-----\n\n")
+
+                out.write(content)
+                if not content.endswith("\n"):
+                    out.write("\n")
+
+                out.write("\n===== FILE END =====\n\n")
+    except Exception as e:
+        print(f"Error writing to output file: {e}")
+        sys.exit(1)
+
+
+def main():
+    # Check for minimum arguments
+    if len(sys.argv) < 3:
+        print("Usage: python script.py <output_file> <root_dir> [ext1 ext2 ...]")
+        print("Example: python script.py dump.txt ./my_project .py .js .css")
+        sys.exit(1)
+
+    output_file = sys.argv[1]
+    root_dir = sys.argv[2]
+    
+    # Process optional extensions: ensure they start with a dot and are lowercase
+    allowed_extensions = set()
+    if len(sys.argv) > 3:
+        for ext in sys.argv[3:]:
+            if not ext.startswith("."):
+                ext = "." + ext
+            allowed_extensions.add(ext.lower())
+
+    if not os.path.isdir(root_dir):
+        print(f"Error: The directory '{root_dir}' does not exist.")
+        sys.exit(1)
+
+    print(f"\nScanning: {root_dir}")
+    if allowed_extensions:
+        print(f"Filtering for extensions: {', '.join(allowed_extensions)}")
+    else:
+        print("No extension list provided. Using default exclusion list.")
+
+    files = collect_files(root_dir, allowed_extensions)
+    write_output(root_dir, files, output_file)
+    
+    print(f"Done. Exported {len(files)} files to {output_file}\n")
+
+
+if __name__ == "__main__":
+    main()
