@@ -192,11 +192,11 @@ def search(query, filepath, top_k=5, fuzzy_threshold=0.75):
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python search.py \"<query>\" <file>")
+        print("Usage: python search.py <file> \"<query>\"")
         sys.exit(1)
 
-    query = sys.argv[1]
-    filepath = sys.argv[2]
+    filepath = sys.argv[1]
+    query = sys.argv[2]
     
     results = search(query, filepath)
 
