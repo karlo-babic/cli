@@ -16,6 +16,20 @@ SCRIPTS = {
         "description": "Show basic system information",
         "url": BASE_URL + "cli/sysinfo"
     },
+    "largest": {
+        "description": "Show largest files in a directory (recursively)",
+        "url": BASE_URL + "cli/largest",
+        "args": [
+            {
+                "name": "path",
+                "description": "Optional: Directory to scan (default: current directory)"
+            },
+            {
+                "name": "limit",
+                "description": "Optional: Number of files to show (default: 10)"
+            }
+        ]
+    },
     "doc2txt": {
         "description": "Convert an EPUB file to TXT (uses mutool, pandoc, or Python fallback)",
         "url": BASE_URL + "cli/doc2txt",
