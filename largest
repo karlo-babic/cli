@@ -28,7 +28,14 @@ def parse_args():
 
 def collect_files(root):
     files = []
+    last_len = 0
+
     for dirpath, _, filenames in os.walk(root):
+        # overwrite previous line with current directory
+        display = f"Scanning: {dirpath}"
+        print("\r" + display + " " * max(0, last_len - len(display)), end="", flush=True)
+        last_len = len(display)
+
         for name in filenames:
             full_path = os.path.join(dirpath, name)
             try:
@@ -36,6 +43,10 @@ def collect_files(root):
                 files.append((size, full_path))
             except Exception:
                 continue
+
+    # clear line after finishing
+    print("\r" + " " * last_len + "\r", end="", flush=True)
+
     return files
 
 def main():
