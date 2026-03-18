@@ -19,16 +19,16 @@ import re
 
 def try_mutool(epub_path, txt_path):
     try:
-        subprocess.run(["mutool", "convert", "-o", txt_path, epub_path], check=True)
-        print("Used: mutool")
+        subprocess.run(["mutool", "convert", "-o", txt_path, epub_path], check=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        print(f"[+] Success: Used 'mutool' -> {txt_path}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
 def try_pandoc(epub_path, txt_path):
     try:
-        subprocess.run(["pandoc", epub_path, "-t", "plain", "-o", txt_path], check=True)
-        print("Used: pandoc")
+        subprocess.run(["pandoc", epub_path, "-t", "plain", "-o", txt_path], check=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        print(f"[+] Success: Used 'pandoc' -> {txt_path}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -44,29 +44,39 @@ def python_fallback(epub_path, txt_path):
                         # Strip HTML tags crudely
                         text = re.sub(r'<[^>]+>', '', content)
                         text = re.sub(r'\n\s*\n', '\n\n', text)
-                        text_parts.append(text)
+                        text_parts.append(text.strip())
+        
         with open(txt_path, 'w', encoding='utf-8') as out:
-            out.write('\n\n'.join(text_parts))
-        print("Used: Python fallback")
+            out.write('\n\n'.join(filter(None, text_parts)))
+            
+        print(f"[+] Success: Used 'Python fallback' -> {txt_path}")
         return True
     except Exception as e:
-        print(f"Python fallback failed: {e}")
+        print(f"[-] Python fallback failed: {e}")
         return False
 
 def epub_to_txt(epub_path):
+    print("\n=== EPUB to TXT Converter ===")
     if not os.path.isfile(epub_path):
-        print(f"File not found: {epub_path}")
+        print(f"[-] File not found: {epub_path}\n")
         return
+        
+    print(f"[*] Processing: {epub_path}")
     txt_path = os.path.splitext(epub_path)[0] + ".txt"
 
     if try_mutool(epub_path, txt_path):
+        print()
         return
     if try_pandoc(epub_path, txt_path):
+        print()
         return
+        
     python_fallback(epub_path, txt_path)
+    print()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 doc2txt.py file.epub")
+        print("\n=== EPUB to TXT Converter ===")
+        print("Usage: python3 doc2txt.py <file.epub>\n")
     else:
         epub_to_txt(sys.argv[1])

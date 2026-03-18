@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
 import os
+import shutil
 import platform
 import subprocess
-
 
 def run_command(cmd):
     try:
@@ -13,14 +13,12 @@ def run_command(cmd):
     except Exception:
         return None
 
-
 def get_cpu_info():
     cpu = {}
     cpu["model"] = run_command("lscpu | grep 'Model name' | cut -d: -f2").strip() if run_command("which lscpu") else platform.processor()
     cpu["cores"] = os.cpu_count()
     cpu["arch"] = platform.machine()
     return cpu
-
 
 def get_ram_info():
     meminfo = {}
@@ -35,16 +33,11 @@ def get_ram_info():
         pass
     return meminfo
 
-
 def get_gpu_info():
     gpu = run_command("lspci | grep -i 'vga\\|3d\\|2d'")
     return gpu or "Not available"
 
-
 def get_disk_info():
-    import os
-    import shutil
-
     disks = []
 
     # Always check / and /home
@@ -52,12 +45,12 @@ def get_disk_info():
         try:
             usage = shutil.disk_usage(path)
             disks.append({
+                "mount": path,
                 "filesystem": path,
                 "size": f"{usage.total // (1024**3)}G",
                 "used": f"{usage.used // (1024**3)}G",
                 "avail": f"{usage.free // (1024**3)}G",
-                "use%": f"{int(usage.used / usage.total * 100)}%",
-                "mount": path,
+                "use%": f"{int(usage.used / usage.total * 100)}%"
             })
         except Exception:
             pass
@@ -71,18 +64,17 @@ def get_disk_info():
                     try:
                         usage = shutil.disk_usage(full_path)
                         disks.append({
+                            "mount": full_path,
                             "filesystem": full_path,
                             "size": f"{usage.total // (1024**3)}G",
                             "used": f"{usage.used // (1024**3)}G",
                             "avail": f"{usage.free // (1024**3)}G",
-                            "use%": f"{int(usage.used / usage.total * 100)}%",
-                            "mount": full_path,
+                            "use%": f"{int(usage.used / usage.total * 100)}%"
                         })
                     except Exception:
                         pass
 
     return disks
-
 
 def get_os_info():
     return {
@@ -92,39 +84,44 @@ def get_os_info():
         "hostname": platform.node()
     }
 
-
 def print_section(title):
     print(f"\n=== {title} ===")
 
+def print_key_values(data, suffix=""):
+    for k, v in data.items():
+        val_str = f"{v} {suffix}".strip() if suffix else str(v)
+        print(f"  {k.capitalize():<12}: {val_str}")
 
 def main():
-    print_section("OS")
-    os_info = get_os_info()
-    for k, v in os_info.items():
-        print(f"{k.capitalize():<12}: {v}")
+    print_section("OS Information")
+    print_key_values(get_os_info())
 
-    print_section("CPU")
-    cpu = get_cpu_info()
-    for k, v in cpu.items():
-        print(f"{k.capitalize():<12}: {v}")
+    print_section("CPU Information")
+    print_key_values(get_cpu_info())
 
-    print_section("RAM")
-    ram = get_ram_info()
-    for k, v in ram.items():
-        print(f"{k.capitalize():<12}: {v} MB")
+    print_section("Memory (RAM)")
+    print_key_values(get_ram_info(), suffix="MB")
 
-    print_section("GPU")
+    print_section("GPU Information")
     gpu = get_gpu_info()
-    print(gpu)
+    if gpu and gpu != "Not available":
+        for line in gpu.splitlines():
+            print(f"  {line.strip()}")
+    else:
+        print(f"  {gpu}")
 
-    print_section("Disks")
+    print_section("Disk Usage")
     disks = get_disk_info()
-    for d in disks:
-        print(f"{d['filesystem']} ({d['mount']})")
-        print(f"  Size: {d['size']}, Used: {d['used']}, Available: {d['avail']}, Usage: {d['use%']}")
+    if not disks:
+        print("  No disk information available.")
+    else:
+        header = f"  {'Mount':<15} {'Size':<6} {'Used':<6} {'Avail':<6} {'Use%'}"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for d in disks:
+            print(f"  {d['mount']:<15} {d['size']:<6} {d['used']:<6} {d['avail']:<6} {d['use%']}")
     
     print()
-
 
 def run(args=None):
     main()

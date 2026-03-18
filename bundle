@@ -112,15 +112,15 @@ def write_output(root_dir, files, output_file):
 
                 out.write("\n===== FILE END =====\n\n")
     except Exception as e:
-        print(f"Error writing to output file: {e}")
+        print(f"\n[-] Error writing to output file: {e}\n")
         sys.exit(1)
 
 
 def main():
-    # Check for minimum arguments
     if len(sys.argv) < 3:
-        print("Usage: python script.py <output_file> <root_dir> [ext1 ext2 ...]")
-        print("Example: python script.py dump.txt ./my_project .py .js .css")
+        print("\n=== Codebase Bundler ===")
+        print("Usage: python bundle.py <output_file> <root_dir> [ext1 ext2 ...]")
+        print("Example: python bundle.py dump.txt ./my_project .py .js .css\n")
         sys.exit(1)
 
     output_file = sys.argv[1]
@@ -135,19 +135,20 @@ def main():
             allowed_extensions.add(ext.lower())
 
     if not os.path.isdir(root_dir):
-        print(f"Error: The directory '{root_dir}' does not exist.")
+        print(f"\n[-] Error: The directory '{root_dir}' does not exist.\n")
         sys.exit(1)
 
-    print(f"\nScanning: {root_dir}")
+    print("\n=== Codebase Bundler ===")
+    print(f"[*] Scanning: {root_dir}")
     if allowed_extensions:
-        print(f"Filtering for extensions: {', '.join(allowed_extensions)}")
+        print(f"[*] Filtering for extensions: {', '.join(allowed_extensions)}")
     else:
-        print("No extension list provided. Using default exclusion list.")
+        print("[*] No extension list provided. Using default exclusion list.")
 
     files = collect_files(root_dir, allowed_extensions)
     write_output(root_dir, files, output_file)
     
-    print(f"Done. Exported {len(files)} files to {output_file}\n")
+    print(f"[+] Done. Exported {len(files)} files to {output_file}\n")
 
 
 if __name__ == "__main__":

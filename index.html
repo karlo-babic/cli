@@ -88,19 +88,28 @@ SCRIPTS = {
     },
 }
 
-# ANSI colors are disabled on Windows cmd for compatibility
-if os.name == "nt":
-    RED = GREEN = YELLOW = BLUE = RESET = ""
-else:
+def supports_color():
+    if not sys.stdout.isatty():
+        return False
+    if "NO_COLOR" in os.environ:
+        return False
+    if os.name == 'nt':
+        return "TERM" in os.environ or os.environ.get("ANSICON") is not None
+    return os.environ.get("TERM") not in (None, "dumb")
+
+if supports_color():
     RED = "\033[31m"
     GREEN = "\033[32m"
     YELLOW = "\033[33m"
     BLUE = "\033[34m"
+    CYAN = "\033[36m"
     RESET = "\033[0m"
+else:
+    RED = GREEN = YELLOW = BLUE = CYAN = RESET = ""
 
 def run_script(name, args=None):
     if name not in SCRIPTS:
-        print(f"Unknown script: {name}")
+        print(f"\n{RED}[-] Unknown script: {name}{RESET}\n")
         return
 
     args = args or []
@@ -113,35 +122,37 @@ def run_script(name, args=None):
                 tmp.write(response.read().decode())
             tmp.flush()
         except Exception as e:
-            print(f"Failed to fetch script: {e}")
+            print(f"\n{RED}[-] Failed to fetch script: {e}{RESET}\n")
             return
 
         # Execute the downloaded script with forwarded arguments
         cmd = ["python3", tmp.name] + args
-        subprocess.run(cmd)
+        try:
+            subprocess.run(cmd)
+        except Exception as e:
+            print(f"\n{RED}[-] Execution failed: {e}{RESET}\n")
 
 def print_help():
-    print("\nScripts:")
+    print(f"\n{CYAN}Available Scripts:{RESET}")
     for name, info in SCRIPTS.items():
-        print(f"  {name:<8} - {info.get('description','')}")
-    print("\nInteractive mode (active):")
-    print("  type a script name, 'help [script]', or 'exit'.")
-    print("Direct script execution:")
-    print(f"  Linux/macOS: curl -s {BASE_URL} | python3 - <script>")
-    print(f"  Windows:     curl.exe -s {BASE_URL} | python3 - <script>\n")
+        print(f"  {GREEN}{name:<8}{RESET} - {info.get('description','')}")
+    print(f"\n{CYAN}Interactive Mode Usage:{RESET}")
+    print("  Type a script name, 'help [script]', or 'exit'.")
+    print(f"\n{CYAN}Direct Execution via cURL:{RESET}")
+    print(f"  Linux/macOS: {YELLOW}curl -s {BASE_URL} | python3 - <script>{RESET}")
+    print(f"  Windows:     {YELLOW}curl.exe -s {BASE_URL} | python3 - <script>{RESET}\n")
 
 def main():
-    # Direct script execution if arguments are given
     if len(sys.argv) > 1:
         script_name = sys.argv[1]
         script_args = sys.argv[2:]
         run_script(script_name, script_args)
         return
 
-    print("""
-    ╔══════════════════════════════════════╗
+    print(f"""
+    {CYAN}╔══════════════════════════════════════╗
     ║   Remote Python Script Environment   ║
-    ╚══════════════════════════════════════╝""")
+    ╚══════════════════════════════════════╝{RESET}""")
 
     print_help()
 
@@ -168,7 +179,7 @@ def main():
                 inp = inp.strip()
 
             if inp.lower() in ("exit", "quit"):
-                print("Exiting.\n")
+                print("\nExiting.\n")
                 break
 
             if inp.lower().startswith("help"):
@@ -179,14 +190,15 @@ def main():
                     script_name = parts[1]
                     info = SCRIPTS.get(script_name)
                     if not info:
-                        print(f"No help available for unknown script '{script_name}'")
+                        print(f"\n{RED}[-] No help available for unknown script '{script_name}'{RESET}\n")
                     else:
-                        print(f"\n{script_name} - {info.get('description','')}")
+                        print(f"\n{CYAN}=== {script_name} ==={RESET}")
+                        print(f"{info.get('description','')}\n")
                         args = info.get("args", [])
                         if args:
-                            print("Arguments:")
+                            print(f"{YELLOW}Arguments:{RESET}")
                             for arg in args:
-                                print(f"  {arg.get('name','')} : {arg.get('description','')}")
+                                print(f"  {GREEN}{arg.get('name',''):<15}{RESET} : {arg.get('description','')}")
                         print()
                 continue
 
@@ -198,7 +210,7 @@ def main():
             run_script(script_name, script_args)
 
         except (EOFError, KeyboardInterrupt):
-            print("\nExiting.\n")
+            print("\n\nExiting.\n")
             break
 
 if __name__ == "__main__":

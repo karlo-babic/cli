@@ -6,7 +6,6 @@ import re
 def get_linux_version(module_name):
     """Linux specific: get version using modinfo."""
     try:
-        # modinfo -F version gets just the version string
         output = subprocess.check_output(["modinfo", "-F", "version", module_name], 
                                          stderr=subprocess.DEVNULL).decode().strip()
         return output if output else "N/A"
@@ -24,25 +23,21 @@ def get_installed_drivers():
             return output
 
         elif os_name == "Linux":
-            # 1. Get the list of loaded modules
             lsmod_out = subprocess.check_output(["lsmod"]).decode().splitlines()
             
             header = f"{'Module':<25} {'Version':<20} {'Used by':<20}"
             results.append(header)
             results.append("-" * len(header))
 
-            # 2. Iterate modules and find versions
-            for line in lsmod_out[1:]: # Skip the header
+            for line in lsmod_out[1:]:
                 parts = line.split()
                 if len(parts) > 0:
                     module_name = parts[0]
                     used_by = parts[3] if len(parts) > 3 else ""
                     version = get_linux_version(module_name)
                     
-                    # Special check for NVIDIA (sometimes version is hidden)
                     if "nvidia" in module_name and version == "N/A":
                         try:
-                            # Direct way to get NVIDIA version on Linux
                             with open("/proc/driver/nvidia/version", "r") as f:
                                 ver_match = re.search(r"Kernel Module\s+([\d\.]+)", f.read())
                                 if ver_match: version = ver_match.group(1)
@@ -52,27 +47,30 @@ def get_installed_drivers():
             
             return "\n".join(results)
 
-        elif os_name == "Darwin":  # macOS
-            # kextstat output includes version in parentheses next to the name
+        elif os_name == "Darwin":
             output = subprocess.check_output(["kextstat"]).decode()
             return output
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"[-] Error fetching driver data: {str(e)}"
 
 if __name__ == "__main__":
-    # Check if a filter argument was passed
     search_term = sys.argv[1].lower() if len(sys.argv) > 1 else None
     
+    print("\n=== System Drivers ===")
     driver_data = get_installed_drivers()
     
-    print()
-    if search_term:
-        # Filter the output lines based on the search term
+    if search_term and driver_data and not driver_data.startswith("[-]"):
         lines = driver_data.splitlines()
-        header = lines[0:2] # Keep header rows
+        # Keep header assuming first two lines are headers/separators
+        header = lines[0:2] if len(lines) >= 2 else []
         matches = [line for line in lines[2:] if search_term in line.lower()]
-        print("\n".join(header + matches))
+        
+        if matches:
+            print("\n".join(header + matches))
+        else:
+            print(f"[-] No drivers found matching '{search_term}'")
     else:
         print(driver_data)
+        
     print()

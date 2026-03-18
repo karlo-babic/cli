@@ -21,7 +21,7 @@ def parse_args():
         try:
             limit = int(sys.argv[2])
         except ValueError:
-            print(f"Invalid number: {sys.argv[2]}")
+            print(f"[-] Invalid number for limit: {sys.argv[2]}")
             sys.exit(1)
 
     return path, limit
@@ -31,8 +31,9 @@ def collect_files(root):
     last_len = 0
 
     for dirpath, _, filenames in os.walk(root):
-        # overwrite previous line with current directory
-        display = f"Scanning: {dirpath}"
+        display = f"[*] Scanning: {dirpath}"
+        # Truncate to terminal width safely to avoid line wraps ruining the clean carriage return
+        display = display[:75] 
         print("\r" + display + " " * max(0, last_len - len(display)), end="", flush=True)
         last_len = len(display)
 
@@ -44,27 +45,29 @@ def collect_files(root):
             except Exception:
                 continue
 
-    # clear line after finishing
     print("\r" + " " * last_len + "\r", end="", flush=True)
-
     return files
 
 def main():
     root, limit = parse_args()
 
     if not os.path.exists(root):
-        print(f"Path does not exist: {root}")
+        print(f"\n[-] Path does not exist: {root}\n")
         return
 
+    print()
     files = collect_files(root)
     files.sort(key=lambda x: x[0], reverse=True)
 
     top = files[:limit]
 
-    print(f"\nTop {len(top)} largest files in '{root}':\n")
-
-    for size, path in top:
-        print(f"{human_readable(size):>8}  {path}")
+    print(f"=== Largest Files in '{root}' ===")
+    
+    if not top:
+        print("No files found.")
+    else:
+        for size, path in top:
+            print(f"{human_readable(size):>8}  {path}")
 
     print()
 
