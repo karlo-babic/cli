@@ -178,27 +178,28 @@ def main():
 
     print_help()
 
-    use_input = sys.stdin.isatty()
-
-    if not use_input:
+    # Reconnect standard input to the terminal if the script was piped (curl | python3)
+    # This restores native arrow key support, command history, and line editing.
+    if not sys.stdin.isatty():
         try:
-            if os.name == "nt":
-                tty_in = open("CON", "r")
-            else:
-                tty_in = open("/dev/tty", "r")
+            tty_fd = os.open("CON" if os.name == "nt" else "/dev/tty", os.O_RDONLY)
+            os.dup2(tty_fd, 0)
+            sys.stdin = os.fdopen(0, "r")
+            
+            # Import readline ONLY AFTER stdin is reconnected to the terminal
+            try:
+                import readline
+            except ImportError:
+                pass
         except Exception:
-            tty_in = sys.stdin
+            pass
 
     while True:
         try:
-            if use_input:
-                inp = input(f"{GREEN}cli>{RESET} ").strip()
-            else:
-                print(f"{GREEN}cli>{RESET} ", end="", flush=True)
-                inp = tty_in.readline()
-                if not inp:
-                    continue
-                inp = inp.strip()
+            inp = input(f"{GREEN}cli>{RESET} ").strip()
+            
+            if not inp:
+                continue
 
             if inp.lower() in ("exit", "quit"):
                 print("\nExiting.\n")
