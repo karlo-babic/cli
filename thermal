@@ -18,7 +18,7 @@ def get_thermal_data():
                                 label = f.read().strip()
                             with open(os.path.join(thermal_path, zone, "temp"), "r") as f:
                                 temp = int(f.read().strip()) / 1000.0
-                            results.append(f"  {label:<20}: {temp:.1f}°C")
+                            results.append(f"  {label:<20}: {temp:.1f}\u00B0C")
                         except: continue
 
         elif os_name == "Windows":
@@ -27,7 +27,7 @@ def get_thermal_data():
             temps = re.findall(r"(\d+)", output)
             for i, t in enumerate(temps):
                 celsius = (int(t) / 10.0) - 273.15
-                results.append(f"  ThermalZone {i:<8}: {celsius:.1f}°C")
+                results.append(f"  ThermalZone {i:<8}: {celsius:.1f}\u00B0C")
             
             if not results:
                 results.append("  [-] No WMI thermal data found (often restricted by BIOS).")
@@ -45,7 +45,7 @@ def get_thermal_data():
             gpu_cmd = ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"]
             gpu_temp = subprocess.check_output(gpu_cmd, stderr=subprocess.DEVNULL).decode().strip()
             if gpu_temp:
-                results.append(f"  {'NVIDIA GPU':<20}: {gpu_temp}.0°C")
+                results.append(f"  {'NVIDIA GPU':<20}: {gpu_temp}.0\u00B0C")
         except:
             pass
 
