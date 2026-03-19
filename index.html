@@ -153,8 +153,10 @@ def print_help():
     print(f"\n{CYAN}Interactive Mode Usage:{RESET}")
     print("  Type a script name, 'help [script]', or 'exit'.")
     print(f"\n{CYAN}Direct Execution via cURL:{RESET}")
-    print(f"  Linux/macOS: {YELLOW}curl -s {BASE_URL} | python3 - <script>{RESET}")
-    print(f"  Windows:     {YELLOW}curl.exe -s {BASE_URL} | python3 - <script>{RESET}\n")
+    if os.name == "nt":
+        print(f"  {YELLOW}curl.exe -s {BASE_URL} | python3 - <script>{RESET}\n")
+    else:
+        print(f"  {YELLOW}curl -s {BASE_URL} | python3 - <script>{RESET}\n")
 
 def main():
     if len(sys.argv) > 1:
