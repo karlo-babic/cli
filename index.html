@@ -9,6 +9,12 @@ import tempfile
 import os
 import shlex
 
+# Enable arrow keys and command history for input() on Linux/macOS
+try:
+    import readline
+except ImportError:
+    pass
+
 BASE_URL = "https://karlo.observer/cli/"
 
 SCRIPTS = {
