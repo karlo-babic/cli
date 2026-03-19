@@ -22,15 +22,53 @@ def get_cpu_info():
 
 def get_ram_info():
     meminfo = {}
-    try:
-        with open("/proc/meminfo") as f:
-            data = f.read()
-        total = int([x for x in data.splitlines() if "MemTotal" in x][0].split()[1])
-        available = int([x for x in data.splitlines() if "MemAvailable" in x][0].split()[1])
-        meminfo["total_mb"] = total // 1024
-        meminfo["available_mb"] = available // 1024
-    except Exception:
-        pass
+    os_name = platform.system()
+
+    if os_name == "Linux":
+        try:
+            with open("/proc/meminfo") as f:
+                data = f.read()
+            total = int([x for x in data.splitlines() if "MemTotal" in x][0].split()[1])
+            available = int([x for x in data.splitlines() if "MemAvailable" in x][0].split()[1])
+            meminfo["total_mb"] = total // 1024
+            meminfo["available_mb"] = available // 1024
+        except Exception:
+            pass
+
+    elif os_name == "Windows":
+        try:
+            import ctypes
+            # Use ctypes to query Windows API directly (faster and more reliable than subprocess/powershell)
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_uint32),
+                    ("dwMemoryLoad", ctypes.c_uint32),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            
+            meminfo["total_mb"] = stat.ullTotalPhys // (1024**2)
+            meminfo["available_mb"] = stat.ullAvailPhys // (1024**2)
+        except Exception:
+            pass
+
+    elif os_name == "Darwin":
+        try:
+            # Basic total RAM for macOS
+            total_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
+            meminfo["total_mb"] = total_bytes // (1024**2)
+            meminfo["available_mb"] = "N/A" # Available RAM is complex to parse reliably on macOS
+        except Exception:
+            pass
+
     return meminfo
 
 def get_gpu_info():
