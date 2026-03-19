@@ -88,6 +88,8 @@ SCRIPTS = {
     },
 }
 
+sys.stdout.reconfigure(encoding='utf-8')
+
 def supports_color():
     if not sys.stdout.isatty():
         return False
