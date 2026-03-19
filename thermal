@@ -34,11 +34,10 @@ def get_thermal_data():
                 for i, t in enumerate(temps):
                     celsius = (int(t) / 10.0) - 273.15
                     results.append(f"  ThermalZone {i:<8}: {celsius:.1f}\u00B0C")
+            except:
+                pass
 
-            except subprocess.CalledProcessError:
-                results.append("  [-] PowerShell ACPI command failed (likely unsupported or restricted).")
-
-            # Always try NVIDIA GPU regardless of ACPI results
+            # Try NVIDIA GPU
             try:
                 gpu_cmd = ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"]
                 gpu_temp = subprocess.check_output(gpu_cmd, stderr=subprocess.DEVNULL).decode().strip()
