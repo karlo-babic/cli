@@ -22,15 +22,24 @@ def get_thermal_data():
                         except: continue
 
         elif os_name == "Windows":
-            cmd = ["powershell", "Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature | Select-Object -Property CurrentTemperature"]
-            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
-            temps = re.findall(r"(\d+)", output)
-            for i, t in enumerate(temps):
-                celsius = (int(t) / 10.0) - 273.15
-                results.append(f"  ThermalZone {i:<8}: {celsius:.1f}\u00B0C")
-            
-            if not results:
-                results.append("  [-] No WMI thermal data found (often restricted by BIOS).")
+            try:
+                cmd = [
+                    "powershell",
+                    "-Command",
+                    "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -ExpandProperty CurrentTemperature"
+                ]
+                output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode("utf-8", errors="ignore")
+
+                temps = re.findall(r"(\d+)", output)
+                for i, t in enumerate(temps):
+                    celsius = (int(t) / 10.0) - 273.15
+                    results.append(f"  ThermalZone {i:<8}: {celsius:.1f}\u00B0C")
+
+                if not results:
+                    results.append("  [-] No WMI thermal data found (often restricted by BIOS).")
+
+            except subprocess.CalledProcessError:
+                results.append("  [-] PowerShell command failed (likely unsupported or restricted).")
 
         elif os_name == "Darwin":  
             cmd = "sudo powermetrics -n 1 --samplers smc | grep -i 'CPU die temperature'"
