@@ -64,6 +64,12 @@ def read_file_with_limit(filepath):
     truncated = False
 
     try:
+        # Perform null byte check on the first 1024 bytes to detect binary files
+        with open(filepath, "rb") as f:
+            chunk = f.read(1024)
+            if b'\0' in chunk:
+                return "[SKIPPED: BINARY FILE DETECTED]\n", False
+
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= MAX_FILE_LINES:
