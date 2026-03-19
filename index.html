@@ -88,9 +88,6 @@ SCRIPTS = {
     },
 }
 
-sys.stdin.reconfigure(encoding='utf-8')
-sys.stdout.reconfigure(encoding='utf-8')
-
 def supports_color():
     if not sys.stdout.isatty():
         return False
@@ -152,10 +149,10 @@ def main():
         run_script(script_name, script_args)
         return
 
-    print(f"""
-    {CYAN}╔══════════════════════════════════════╗
-    ║   Remote Python Script Environment   ║
-    ╚══════════════════════════════════════╝{RESET}""")
+    top = "\u2554" + "\u2550"*38 + "\u2557"
+    mid = "\u2551   Remote Python Script Environment   \u2551"
+    bot = "\u255A" + "\u2550"*38 + "\u255D"
+    print(f"\n{CYAN}{top}\n{mid}\n{bot}{RESET}")
 
     print_help()
 
