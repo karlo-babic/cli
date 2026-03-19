@@ -38,6 +38,15 @@ def is_valid_file(filepath, allowed_extensions):
         return ext not in IGNORED_EXTENSIONS
 
 
+def is_binary(filepath):
+    """Check if a file is binary by looking for a null byte in the first 1024 bytes."""
+    try:
+        with open(filepath, "rb") as f:
+            return b'\0' in f.read(1024)
+    except Exception:
+        return True
+
+
 def collect_files(root_dir, allowed_extensions):
     file_paths = []
 
@@ -48,7 +57,8 @@ def collect_files(root_dir, allowed_extensions):
         for filename in filenames:
             full_path = os.path.join(dirpath, filename)
 
-            if not is_valid_file(full_path, allowed_extensions):
+            # Skip if extension not allowed or file is binary
+            if not is_valid_file(full_path, allowed_extensions) or is_binary(full_path):
                 continue
 
             rel_path = os.path.relpath(full_path, root_dir)
@@ -64,12 +74,6 @@ def read_file_with_limit(filepath):
     truncated = False
 
     try:
-        # Perform null byte check on the first 1024 bytes to detect binary files
-        with open(filepath, "rb") as f:
-            chunk = f.read(1024)
-            if b'\0' in chunk:
-                return "[SKIPPED: BINARY FILE DETECTED]\n", False
-
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= MAX_FILE_LINES:
