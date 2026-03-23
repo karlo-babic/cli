@@ -7,7 +7,7 @@ import os
 
 class Stream:
     def __init__(self):
-        self.DATA_PATH = './data/ngrams.json'
+        self.DATA_PATH = 'https://karlo.observer/data/ngrams.json'
         self.TICK_MS = 250
         self.STEPS_PER_BLOCK = 200
         self.EPOCH = 1709251200000
