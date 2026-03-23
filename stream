@@ -38,11 +38,13 @@ class Stream:
         return rng
 
     def load_data(self):
-        if not os.path.exists(self.DATA_PATH):
-            print(f"Error: Data file not found at {self.DATA_PATH}")
+        print(f"Connecting to broadcast data: {self.DATA_PATH}")
+        try:
+            with urllib.request.urlopen(self.DATA_PATH) as response:
+                self.data = json.loads(response.read().decode())
+        except Exception as e:
+            print(f"Error: Could not fetch broadcast data. {e}")
             sys.exit(1)
-        with open(self.DATA_PATH, 'r') as f:
-            self.data = json.load(f)
 
     def get_predictions(self, trie_root, context_array):
         """Traverses the reverse-context Katz Backoff Trie"""
