@@ -178,7 +178,7 @@ def print_help():
     if os.name == "nt":
         print(f"  {YELLOW}irm {BASE_URL} | py - <script>{RESET}\n")
     else:
-        print(f"  {YELLOW}curl -s {BASE_URL} | (python3 || python) - <script>{RESET}\n")
+        print(f"  {YELLOW}curl -s {BASE_URL} | python - <script>{RESET}\n")
 
 def main():
     if len(sys.argv) > 1:
