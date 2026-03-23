@@ -1,4 +1,4 @@
-### Usage ### <p>Linux/macOS: <code style="user-select: all;">curl -s https://karlo.observer/cli/ | python3</code></p><p>Windows: <code style="user-select: all;">curl.exe -s https://karlo.observer/cli/ | python3</code></p> <!--
+### Usage ### <p>Linux/macOS: <code style="user-select: all;">curl -s https://karlo.observer/cli/ | (python3 || python)</code></p><p>Windows (PowerShell): <code style="user-select: all;">irm https://karlo.observer/cli/ | py</code></p><!--
 
 #!/usr/bin/env python3
 
@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import os
 import shlex
+import shutil
 
 # Enable arrow keys and command history for input() on Linux/macOS
 try:
@@ -127,6 +128,17 @@ if supports_color():
 else:
     RED = GREEN = YELLOW = BLUE = CYAN = RESET = ""
 
+def get_python_cmd():
+    candidates = ["python3", "python"]
+    if os.name == "nt":
+        candidates.insert(0, "py")
+
+    for cmd in candidates:
+        if shutil.which(cmd):
+            return cmd
+
+    return None
+
 def run_script(name, args=None):
     if name not in SCRIPTS:
         print(f"\n{RED}[-] Unknown script: {name}{RESET}\n")
@@ -146,7 +158,11 @@ def run_script(name, args=None):
             return
 
         # Execute the downloaded script with forwarded arguments
-        cmd = ["python3", tmp.name] + args
+        python_cmd = get_python_cmd()
+        if not python_cmd:
+            print(f"\n{RED}[-] No Python interpreter found{RESET}\n")
+            return
+        cmd = [python_cmd, tmp.name] + args
         try:
             subprocess.run(cmd)
         except Exception as e:
@@ -160,9 +176,9 @@ def print_help():
     print("  Type a script name, 'help [script]', or 'exit'.")
     print(f"\n{CYAN}Direct Execution via cURL:{RESET}")
     if os.name == "nt":
-        print(f"  {YELLOW}curl.exe -s {BASE_URL} | python3 - <script>{RESET}\n")
+        print(f"  {YELLOW}irm {BASE_URL} | py - <script>{RESET}\n")
     else:
-        print(f"  {YELLOW}curl -s {BASE_URL} | python3 - <script>{RESET}\n")
+        print(f"  {YELLOW}curl -s {BASE_URL} | (python3 || python) - <script>{RESET}\n")
 
 def main():
     if len(sys.argv) > 1:
