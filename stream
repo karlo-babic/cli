@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+import json
+import time
+import math
+import sys
+import os
+
+class Stream:
+    def __init__(self):
+        self.DATA_PATH = './data/ngrams.json'
+        self.TICK_MS = 250
+        self.STEPS_PER_BLOCK = 200
+        self.EPOCH = 1709251200000
+        self.GRAVITY_MULTIPLIER = 2.5
+        
+        self.data = None
+        self.current_word_context = []
+        self.current_theme_context = []
+        self.active_theme_id = None
+        self.token_buffer = []
+        self.capitalize_next = True
+        self.current_global_step = 0
+        self.rng_state = 0
+
+    def imul(self, a, b):
+        """Simulates JavaScript Math.imul (32-bit signed multiplication)"""
+        return ((a * b) & 0xFFFFFFFF)
+
+    def seeded_random(self, seed):
+        """Stateless deterministic RNG matching the JS implementation"""
+        self.rng_state = seed & 0xFFFFFFFF
+        def rng():
+            self.rng_state = (self.rng_state + 0x6D2B79F5) & 0xFFFFFFFF
+            t = self.rng_state
+            t = self.imul(t ^ (t >> 15), t | 1)
+            t = (t ^ (t + self.imul(t ^ (t >> 7), t | 61))) & 0xFFFFFFFF
+            return ((t ^ (t >> 14)) >> 0) / 4294967296.0
+        return rng
+
+    def load_data(self):
+        if not os.path.exists(self.DATA_PATH):
+            print(f"Error: Data file not found at {self.DATA_PATH}")
+            sys.exit(1)
+        with open(self.DATA_PATH, 'r') as f:
+            self.data = json.load(f)
+
+    def get_predictions(self, trie_root, context_array):
+        """Traverses the reverse-context Katz Backoff Trie"""
+        node = trie_root
+        best_predictions = None
+        
+        # Check context from most recent to oldest
+        for i in range(len(context_array) - 1, -1, -1):
+            word_id = str(context_array[i])
+            if word_id in node:
+                node = node[word_id]
+                if "" in node:
+                    best_predictions = node[""]
+            else:
+                break
+        return best_predictions
+
+    def weighted_random_select(self, predictions_map, rng):
+        """Deterministic selection based on weights and sorted keys"""
+        # Sort keys numerically to ensure identical behavior across engines
+        keys = sorted(predictions_map.keys(), key=lambda x: int(x))
+        weights = [predictions_map[k] for k in keys]
+        total = sum(weights)
+        
+        r = rng() * total
+        for i, weight in enumerate(weights):
+            r -= weight
+            if r <= 0:
+                return keys[i]
+        return keys[0]
+
+    def reset_theme_context(self, rng):
+        theme_starters = self.data.get('ts', [])
+        if theme_starters:
+            starter_seq = theme_starters[int(rng() * len(theme_starters))]
+            self.current_theme_context = list(starter_seq)
+            self.active_theme_id = str(self.current_theme_context[-1])
+
+    def advance_theme(self, rng):
+        theme_model = self.data.get('t', {})
+        candidates = self.get_predictions(theme_model, self.current_theme_context)
+        
+        if not candidates:
+            self.reset_theme_context(rng)
+            return
+
+        chosen_id = self.weighted_random_select(candidates, rng)
+        self.current_theme_context.append(int(chosen_id))
+        self.active_theme_id = str(chosen_id)
+        
+        if len(self.current_theme_context) > 5:
+            self.current_theme_context.pop(0)
+
+    def get_next_token(self, rng):
+        if self.token_buffer:
+            return self.token_buffer.pop(0)
+
+        grammar_model = self.data.get('g', {})
+        vocab = self.data.get('v', [])
+        starters = self.data.get('s', [])
+        gravity_map = self.data.get('w', {})
+
+        if not self.current_word_context:
+            starter_seq = starters[int(rng() * len(starters))]
+            self.current_word_context = list(starter_seq)
+            self.token_buffer = [vocab[wid] for wid in self.current_word_context]
+            return self.token_buffer.pop(0)
+
+        candidates = self.get_predictions(grammar_model, self.current_word_context)
+
+        if not candidates:
+            starter_seq = starters[int(rng() * len(starters))]
+            self.current_word_context = list(starter_seq)
+            self.token_buffer = [vocab[wid] for wid in self.current_word_context]
+            return self.token_buffer.pop(0)
+
+        # Apply Gravity (Theme Bias)
+        weighted_candidates = candidates.copy()
+        if self.active_theme_id in gravity_map:
+            active_gravity = gravity_map[self.active_theme_id]
+            for word_id, weight in weighted_candidates.items():
+                if word_id in active_gravity:
+                    weighted_candidates[word_id] += (weight * active_gravity[word_id] * self.GRAVITY_MULTIPLIER)
+
+        chosen_id = int(self.weighted_random_select(weighted_candidates, rng))
+        self.current_word_context.append(chosen_id)
+        
+        if len(self.current_word_context) > 10:
+            self.current_word_context.pop(0)
+
+        return vocab[chosen_id]
+
+    def format_token(self, token, is_first):
+        is_punct = token == "."
+        out = ""
+
+        if not is_first and not is_punct:
+            out += " "
+
+        if is_punct:
+            out += token
+            self.capitalize_next = True
+        else:
+            # Handle capitalization and the "I" pronoun
+            should_caps = self.capitalize_next or token.lower() in ["i", "im", "ive", "ill", "id"]
+            out += token.capitalize() if should_caps else token
+            self.capitalize_next = False
+            
+        return out
+
+    def fast_forward(self, target_step):
+        """Jump to the current global state based on Epoch time"""
+        block_id = target_step // self.STEPS_PER_BLOCK
+        step_in_block = target_step % self.STEPS_PER_BLOCK
+
+        self.current_word_context = []
+        self.current_theme_context = []
+        self.token_buffer = []
+        self.capitalize_next = True
+        
+        rng = self.seeded_random(block_id)
+        self.reset_theme_context(rng)
+
+        for i in range(step_in_block + 1):
+            token = self.get_next_token(rng)
+            formatted = self.format_token(token, i == 0)
+            sys.stdout.write(formatted)
+            if token == ".":
+                self.advance_theme(rng)
+        
+        sys.stdout.flush()
+        self.current_global_step = target_step
+
+    def run(self):
+        self.load_data()
+        
+        now_ms = int(time.time() * 1000)
+        target_step = (now_ms - self.EPOCH) // self.TICK_MS
+        
+        print("--- Connecting to Stream ---")
+        self.fast_forward(target_step)
+
+        # Main Loop
+        try:
+            while True:
+                now_ms = int(time.time() * 1000)
+                actual_step = (now_ms - self.EPOCH) // self.TICK_MS
+
+                if actual_step > self.current_global_step:
+                    self.current_global_step += 1
+                    step_in_block = self.current_global_step % self.STEPS_PER_BLOCK
+
+                    # Block Reset
+                    if step_in_block == 0:
+                        block_id = self.current_global_step // self.STEPS_PER_BLOCK
+                        self.current_word_context = []
+                        self.token_buffer = []
+                        self.capitalize_next = True
+                        self.rng_fn = self.seeded_random(block_id)
+                        self.reset_theme_context(self.rng_fn)
+                        print("\n") # Visual break for new block
+
+                    if not hasattr(self, 'rng_fn'):
+                        self.rng_fn = self.seeded_random(self.current_global_step // self.STEPS_PER_BLOCK)
+
+                    token = self.get_next_token(self.rng_fn)
+                    formatted = self.format_token(token, step_in_block == 0)
+                    
+                    sys.stdout.write(formatted)
+                    sys.stdout.flush()
+
+                    if token == ".":
+                        self.advance_theme(self.rng_fn)
+
+                # Sleep until next tick
+                time.sleep(self.TICK_MS / 1000.0 / 2.0)
+        except KeyboardInterrupt:
+            print("\nStream Terminated.")
+
+if __name__ == "__main__":
+    stream = Stream()
+    stream.run()
