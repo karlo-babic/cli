@@ -93,6 +93,16 @@ SCRIPTS = {
             }
         ]
     },
+    "stream": {
+        "description": "Connect to the deterministic generative text broadcast (Dual-Track NLP)",
+        "url": BASE_URL + "stream",
+        "args": [
+            {
+                "name": "prompt",
+                "description": "Optional: Seed the generator with a custom phrase to start a local stream"
+            }
+        ]
+    },
 }
 
 def supports_color():
