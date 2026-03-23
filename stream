@@ -64,7 +64,7 @@ class Stream:
         return rng
 
     def load_data(self):
-        print(f"[*] Connecting to broadcast data: {self.DATA_PATH}")
+        print(f"[*] Connecting to broadcast data: {self.DATA_PATH}\n")
         try:
             req = urllib.request.Request(
                 self.DATA_PATH,
@@ -73,7 +73,7 @@ class Stream:
             with urllib.request.urlopen(req) as response:
                 self.data = json.loads(response.read().decode())
         except Exception as e:
-            print(f"Error: Could not fetch broadcast data. {e}")
+            print(f"[-] Error: Could not fetch broadcast data. {e}")
             sys.exit(1)
 
     def get_predictions(self, trie_root, context_array):
