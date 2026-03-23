@@ -225,64 +225,64 @@ class Stream:
         except KeyboardInterrupt:
             print("\nStream Terminated.\n")
 
-def start_local(self, custom_prompt):
-    """
-    Generates a local, non-deterministic stream based on a custom prompt.
-    """
-    self.load_data()
-    vocab = self.data.get('v', [])
-    
-    # Reset internal state
-    self.current_word_context = []
-    self.token_buffer = []
-    local_step_count = 0
-    
-    # Tokenize: Match lowercase words or periods (matches JS: /[a-z]+|\./g)
-    words = re.findall(r"[a-z]+|\.", custom_prompt.lower())
-    
-    # Process the prompt to build initial context
-    for i, w in enumerate(words):
-        formatted = self.format_token(w, i == 0)
-        sys.stdout.write(formatted)
+    def start_local(self, custom_prompt):
+        """
+        Generates a local, non-deterministic stream based on a custom prompt.
+        """
+        self.load_data()
+        vocab = self.data.get('v', [])
         
-        if w in vocab:
-            word_id = vocab.index(w)
-            self.current_word_context.append(word_id)
-            if len(self.current_word_context) > 10:
-                self.current_word_context.pop(0)
-
-    # Determine capitalization for the first generated word
-    last_word = words[-1] if words else "."
-    self.capitalize_next = (last_word == ".")
-    
-    # Use standard random for local mode
-    local_rng = random.random
-    self.reset_theme_context(local_rng)
-    
-    sys.stdout.flush()
-
-    try:
-        while local_step_count < self.STEPS_PER_BLOCK:
-            token = self.get_next_token(local_rng)
-            
-            # Format and print
-            formatted = self.format_token(token, False)
+        # Reset internal state
+        self.current_word_context = []
+        self.token_buffer = []
+        local_step_count = 0
+        
+        # Tokenize: Match lowercase words or periods (matches JS: /[a-z]+|\./g)
+        words = re.findall(r"[a-z]+|\.", custom_prompt.lower())
+        
+        # Process the prompt to build initial context
+        for i, w in enumerate(words):
+            formatted = self.format_token(w, i == 0)
             sys.stdout.write(formatted)
-            sys.stdout.flush()
+            
+            if w in vocab:
+                word_id = vocab.index(w)
+                self.current_word_context.append(word_id)
+                if len(self.current_word_context) > 10:
+                    self.current_word_context.pop(0)
 
-            if token == ".":
-                self.advance_theme(local_rng)
-
-            local_step_count += 1
-            # Maintain the broadcast tempo
-            time.sleep(self.TICK_MS / 1000.0)
+        # Determine capitalization for the first generated word
+        last_word = words[-1] if words else "."
+        self.capitalize_next = (last_word == ".")
         
-        # End of File marker (Dimmed)
-        sys.stdout.write(" \033[90m[EOF]\033[0m\n")
+        # Use standard random for local mode
+        local_rng = random.random
+        self.reset_theme_context(local_rng)
+        
         sys.stdout.flush()
 
-    except KeyboardInterrupt:
-        print("\nLocal Stream Terminated.\n")
+        try:
+            while local_step_count < self.STEPS_PER_BLOCK:
+                token = self.get_next_token(local_rng)
+                
+                # Format and print
+                formatted = self.format_token(token, False)
+                sys.stdout.write(formatted)
+                sys.stdout.flush()
+
+                if token == ".":
+                    self.advance_theme(local_rng)
+
+                local_step_count += 1
+                # Maintain the broadcast tempo
+                time.sleep(self.TICK_MS / 1000.0)
+            
+            # End of File marker (Dimmed)
+            sys.stdout.write(" \033[90m[EOF]\033[0m\n")
+            sys.stdout.flush()
+
+        except KeyboardInterrupt:
+            print("\nLocal Stream Terminated.\n")
 
 if __name__ == "__main__":
     stream = Stream()
