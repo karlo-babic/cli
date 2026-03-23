@@ -8,7 +8,8 @@ import random
 
 class Stream:
     def __init__(self):
-        self.DATA_PATH = 'https://karlo.observer/data/ngrams.json'
+        # Fallback raw file domain since original relative path relies on server context
+        self.DATA_PATH = 'https://karlo.observer/data/ngrams.json' 
         self.TICK_MS = 250
         self.STEPS_PER_BLOCK = 200
         self.EPOCH = 1709251200000
@@ -21,27 +22,55 @@ class Stream:
         self.token_buffer = []
         self.capitalize_next = True
         self.current_global_step = 0
-        self.rng_state = 0
-
-    def imul(self, a, b):
-        """Simulates JavaScript Math.imul (32-bit signed multiplication)"""
-        return ((a * b) & 0xFFFFFFFF)
+        self.rng_fn = None
 
     def seeded_random(self, seed):
-        """Stateless deterministic RNG matching the JS implementation"""
-        self.rng_state = seed & 0xFFFFFFFF
+        """Stateless deterministic RNG exactly matching the JS Mulberry32 variant"""
+        # Kept in a dictionary so the inner function can mutate the state tracking
+        state = {"seed": float(seed)}
+        
+        def to_uint32(x):
+            return int(x) & 0xFFFFFFFF
+            
+        def to_int32(x):
+            x = int(x) & 0xFFFFFFFF
+            return x - 0x100000000 if x >= 0x80000000 else x
+            
+        def imul(a, b):
+            a = to_int32(a)
+            b = to_int32(b)
+            res = (a * b) & 0xFFFFFFFF
+            return to_int32(res)
+
         def rng():
-            self.rng_state = (self.rng_state + 0x6D2B79F5) & 0xFFFFFFFF
-            t = self.rng_state
-            t = self.imul(t ^ (t >> 15), t | 1)
-            t = (t ^ (t + self.imul(t ^ (t >> 7), t | 61))) & 0xFFFFFFFF
-            return ((t ^ (t >> 14)) >> 0) / 4294967296.0
+            state["seed"] += 0x6D2B79F5
+            t = state["seed"]
+
+            val1 = to_int32(t) ^ (to_uint32(t) >> 15)
+            val2 = to_int32(t) | 1
+            t = imul(val1, val2)
+
+            val3 = to_int32(t) ^ (to_uint32(t) >> 7)
+            val4 = to_int32(t) | 61
+            imul_res = imul(val3, val4)
+
+            # Standard addition matches JS implicit float math between Int32 outputs
+            sum_val = t + imul_res
+            t = to_int32(t) ^ to_int32(sum_val)
+
+            val5 = to_int32(t) ^ (to_uint32(t) >> 14)
+            return to_uint32(val5) / 4294967296.0
+
         return rng
 
     def load_data(self):
         print(f"[*] Connecting to broadcast data: {self.DATA_PATH}")
         try:
-            with urllib.request.urlopen(self.DATA_PATH) as response:
+            req = urllib.request.Request(
+                self.DATA_PATH,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            with urllib.request.urlopen(req) as response:
                 self.data = json.loads(response.read().decode())
         except Exception as e:
             print(f"Error: Could not fetch broadcast data. {e}")
@@ -65,7 +94,6 @@ class Stream:
 
     def weighted_random_select(self, predictions_map, rng):
         """Deterministic selection based on weights and sorted keys"""
-        # Sort keys numerically to ensure identical behavior across engines
         keys = sorted(predictions_map.keys(), key=lambda x: int(x))
         weights = [predictions_map[k] for k in keys]
         total = sum(weights)
@@ -122,7 +150,6 @@ class Stream:
             self.token_buffer = [vocab[wid] for wid in self.current_word_context]
             return self.token_buffer.pop(0)
 
-        # Apply Gravity (Theme Bias)
         weighted_candidates = candidates.copy()
         if self.active_theme_id in gravity_map:
             active_gravity = gravity_map[self.active_theme_id]
@@ -149,15 +176,14 @@ class Stream:
             out += token
             self.capitalize_next = True
         else:
-            # Handle capitalization and the "I" pronoun
             should_caps = self.capitalize_next or token.lower() in ["i", "im", "ive", "ill", "id"]
-            out += token.capitalize() if should_caps else token
+            # Enforce [0].upper() behavior matching javascript instead of Pythons .capitalize()
+            out += (token[0].upper() + token[1:]) if should_caps and len(token) > 0 else token
             self.capitalize_next = False
             
         return out
 
     def fast_forward(self, target_step):
-        """Jump to the current global state based on Epoch time"""
         block_id = target_step // self.STEPS_PER_BLOCK
         step_in_block = target_step % self.STEPS_PER_BLOCK
 
@@ -166,15 +192,15 @@ class Stream:
         self.token_buffer = []
         self.capitalize_next = True
         
-        rng = self.seeded_random(block_id)
-        self.reset_theme_context(rng)
+        self.rng_fn = self.seeded_random(block_id)
+        self.reset_theme_context(self.rng_fn)
 
         for i in range(step_in_block + 1):
-            token = self.get_next_token(rng)
+            token = self.get_next_token(self.rng_fn)
             formatted = self.format_token(token, i == 0)
             sys.stdout.write(formatted)
             if token == ".":
-                self.advance_theme(rng)
+                self.advance_theme(self.rng_fn)
         
         sys.stdout.flush()
         self.current_global_step = target_step
@@ -188,59 +214,54 @@ class Stream:
         
         self.fast_forward(target_step)
 
-        # Main Loop
         try:
             while True:
                 now_ms = int(time.time() * 1000)
                 actual_step = (now_ms - self.EPOCH) // self.TICK_MS
 
+                # Check block drift
+                if actual_step - self.current_global_step > 10:
+                    print("\n\n... [Fast Forwarding] ...\n")
+                    self.fast_forward(actual_step)
+                    continue
+
                 if actual_step > self.current_global_step:
-                    self.current_global_step += 1
-                    step_in_block = self.current_global_step % self.STEPS_PER_BLOCK
+                    while self.current_global_step < actual_step:
+                        self.current_global_step += 1
+                        step_in_block = self.current_global_step % self.STEPS_PER_BLOCK
 
-                    # Block Reset
-                    if step_in_block == 0:
-                        block_id = self.current_global_step // self.STEPS_PER_BLOCK
-                        self.current_word_context = []
-                        self.token_buffer = []
-                        self.capitalize_next = True
-                        self.rng_fn = self.seeded_random(block_id)
-                        self.reset_theme_context(self.rng_fn)
-                        print("\n") # Visual break for new block
+                        if step_in_block == 0:
+                            block_id = self.current_global_step // self.STEPS_PER_BLOCK
+                            self.current_word_context = []
+                            self.token_buffer = []
+                            self.capitalize_next = True
+                            self.rng_fn = self.seeded_random(block_id)
+                            self.reset_theme_context(self.rng_fn)
+                            print("\n") 
 
-                    if not hasattr(self, 'rng_fn'):
-                        self.rng_fn = self.seeded_random(self.current_global_step // self.STEPS_PER_BLOCK)
+                        token = self.get_next_token(self.rng_fn)
+                        formatted = self.format_token(token, step_in_block == 0)
+                        
+                        sys.stdout.write(formatted)
+                        sys.stdout.flush()
 
-                    token = self.get_next_token(self.rng_fn)
-                    formatted = self.format_token(token, step_in_block == 0)
-                    
-                    sys.stdout.write(formatted)
-                    sys.stdout.flush()
+                        if token == ".":
+                            self.advance_theme(self.rng_fn)
 
-                    if token == ".":
-                        self.advance_theme(self.rng_fn)
-
-                # Sleep until next tick
                 time.sleep(self.TICK_MS / 1000.0 / 2.0)
         except KeyboardInterrupt:
             print("\nStream Terminated.\n")
 
     def start_local(self, custom_prompt):
-        """
-        Generates a local, non-deterministic stream based on a custom prompt.
-        """
         self.load_data()
         vocab = self.data.get('v', [])
         
-        # Reset internal state
         self.current_word_context = []
         self.token_buffer = []
         local_step_count = 0
         
-        # Tokenize: Match lowercase words or periods (matches JS: /[a-z]+|\./g)
         words = re.findall(r"[a-z]+|\.", custom_prompt.lower())
         
-        # Process the prompt to build initial context
         for i, w in enumerate(words):
             formatted = self.format_token(w, i == 0)
             sys.stdout.write(formatted)
@@ -251,11 +272,9 @@ class Stream:
                 if len(self.current_word_context) > 10:
                     self.current_word_context.pop(0)
 
-        # Determine capitalization for the first generated word
         last_word = words[-1] if words else "."
         self.capitalize_next = (last_word == ".")
         
-        # Use standard random for local mode
         local_rng = random.random
         self.reset_theme_context(local_rng)
         
@@ -265,7 +284,6 @@ class Stream:
             while local_step_count < self.STEPS_PER_BLOCK:
                 token = self.get_next_token(local_rng)
                 
-                # Format and print
                 formatted = self.format_token(token, False)
                 sys.stdout.write(formatted)
                 sys.stdout.flush()
@@ -274,10 +292,8 @@ class Stream:
                     self.advance_theme(local_rng)
 
                 local_step_count += 1
-                # Maintain the broadcast tempo
                 time.sleep(self.TICK_MS / 1000.0)
             
-            # End of File marker (Dimmed)
             sys.stdout.write(" \033[90m[EOF]\033[0m\n")
             sys.stdout.flush()
 
@@ -286,8 +302,6 @@ class Stream:
 
 if __name__ == "__main__":
     stream = Stream()
-    
-    # Check for custom prompt arguments
     if len(sys.argv) > 1:
         prompt = " ".join(sys.argv[1:])
         stream.start_local(prompt)
