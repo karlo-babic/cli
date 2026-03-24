@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """
-Convert an EPUB file to plain text using the best available tool.
+Convert an EPUB or PDF file to plain text using the best available tool.
 
-Priority:
+EPUB Priority:
 1. mutool
 2. pandoc
 3. Pure Python fallback (no external dependencies)
 
+PDF Priority:
+1. mutool
+2. pdftotext
+3. pypdf / PyPDF2 (Python libraries)
+4. Pure Python fallback (no external dependencies)
+
 Usage:
     python3 doc2txt.py file.epub
+    python3 doc2txt.py file.pdf
 """
 
 import sys
@@ -16,24 +23,91 @@ import os
 import subprocess
 import zipfile
 import re
+import zlib
 
-def try_mutool(epub_path, txt_path):
+
+def try_mutool(input_path, txt_path):
+    """Attempt conversion using Artifex mutool."""
     try:
-        subprocess.run(["mutool", "convert", "-o", txt_path, epub_path], check=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["mutool", "convert", "-o", txt_path, input_path],
+            check=True,
+            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL
+        )
         print(f"[+] Success: Used 'mutool' -> {txt_path}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
-def try_pandoc(epub_path, txt_path):
+
+def try_pandoc(input_path, txt_path):
+    """Attempt conversion using pandoc (best for EPUB/HTML)."""
     try:
-        subprocess.run(["pandoc", epub_path, "-t", "plain", "-o", txt_path], check=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["pandoc", input_path, "-t", "plain", "-o", txt_path],
+            check=True,
+            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL
+        )
         print(f"[+] Success: Used 'pandoc' -> {txt_path}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
-def python_fallback(epub_path, txt_path):
+
+def try_pdftotext(input_path, txt_path):
+    """Attempt conversion using poppler's pdftotext."""
+    try:
+        subprocess.run(
+            ["pdftotext", input_path, txt_path],
+            check=True,
+            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL
+        )
+        print(f"[+] Success: Used 'pdftotext' -> {txt_path}")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def try_python_pdf_libs(input_path, txt_path):
+    """Attempt conversion using common third-party Python PDF libraries."""
+    # Attempt pypdf (modern)
+    try:
+        import pypdf
+        with open(input_path, 'rb') as f:
+            reader = pypdf.PdfReader(f)
+            text = [page.extract_text() or '' for page in reader.pages]
+        with open(txt_path, 'w', encoding='utf-8') as out:
+            out.write('\n\n'.join(text))
+        print(f"[+] Success: Used 'pypdf' library -> {txt_path}")
+        return True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Attempt PyPDF2 (legacy but common)
+    try:
+        import PyPDF2
+        with open(input_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            text = [page.extract_text() or '' for page in reader.pages]
+        with open(txt_path, 'w', encoding='utf-8') as out:
+            out.write('\n\n'.join(text))
+        print(f"[+] Success: Used 'PyPDF2' library -> {txt_path}")
+        return True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return False
+
+
+def epub_python_fallback(epub_path, txt_path):
+    """Extract text from EPUB using only the Python standard library."""
     text_parts = []
     try:
         with zipfile.ZipFile(epub_path, 'r') as zf:
@@ -49,34 +123,96 @@ def python_fallback(epub_path, txt_path):
         with open(txt_path, 'w', encoding='utf-8') as out:
             out.write('\n\n'.join(filter(None, text_parts)))
             
-        print(f"[+] Success: Used 'Python fallback' -> {txt_path}")
+        print(f"[+] Success: Used 'Pure Python EPUB fallback' -> {txt_path}")
         return True
     except Exception as e:
-        print(f"[-] Python fallback failed: {e}")
+        print(f"[-] EPUB Python fallback failed: {e}")
         return False
 
-def epub_to_txt(epub_path):
-    print("\n=== EPUB to TXT Converter ===")
-    if not os.path.isfile(epub_path):
-        print(f"[-] File not found: {epub_path}\n")
-        return
-        
-    print(f"[*] Processing: {epub_path}")
-    txt_path = os.path.splitext(epub_path)[0] + ".txt"
 
-    if try_mutool(epub_path, txt_path):
-        print()
-        return
-    if try_pandoc(epub_path, txt_path):
-        print()
+def pdf_python_fallback(pdf_path, txt_path):
+    """
+    Extract text from PDF using only the Python standard library.
+    This is a crude scraper that decompresses zlib streams and looks for
+    text string operators. It will not handle complex font encodings.
+    """
+    text_parts = []
+    try:
+        with open(pdf_path, 'rb') as f:
+            pdf_data = f.read()
+
+        # Find all FlateDecode streams
+        stream_pattern = re.compile(b'stream[\r\n]+(.*?)[\r\n]+endstream', re.DOTALL)
+        for match in stream_pattern.finditer(pdf_data):
+            stream_data = match.group(1)
+            try:
+                decompressed = zlib.decompress(stream_data)
+                # Extract text blocks inside (...) that represent text in PDF page streams
+                strings = re.findall(b'\((.*?)\)', decompressed)
+                for s in strings:
+                    # Clean escaped characters common in PDF streams
+                    s = s.replace(b'\\(', b'(').replace(b'\\)', b')').replace(b'\\\\', b'\\')
+                    
+                    # PDF text is often latin-1 or MacRoman unless marked as UTF-16
+                    text = s.decode('latin-1', errors='ignore')
+                    if text.startswith('\xfe\xff'):
+                        text = s[2:].decode('utf-16-be', errors='ignore')
+                        
+                    text_parts.append(text)
+            except zlib.error:
+                continue
+
+        with open(txt_path, 'w', encoding='utf-8') as out:
+            # Join with spaces since stream extraction fractures sentences
+            out.write(' '.join(text_parts))
+        
+        print(f"[+] Success: Used 'Pure Python PDF fallback' -> {txt_path}")
+        return True
+    except Exception as e:
+        print(f"[-] PDF Python fallback failed: {e}")
+        return False
+
+
+def convert_file(input_path):
+    print("\n=== Document to TXT Converter ===")
+    if not os.path.isfile(input_path):
+        print(f"[-] File not found: {input_path}\n")
         return
         
-    python_fallback(epub_path, txt_path)
+    print(f"[*] Processing: {input_path}")
+    ext = os.path.splitext(input_path)[1].lower()
+    txt_path = os.path.splitext(input_path)[0] + ".txt"
+
+    if ext == ".epub":
+        if try_mutool(input_path, txt_path):
+            print()
+            return
+        if try_pandoc(input_path, txt_path):
+            print()
+            return
+        epub_python_fallback(input_path, txt_path)
+        
+    elif ext == ".pdf":
+        if try_mutool(input_path, txt_path):
+            print()
+            return
+        if try_pdftotext(input_path, txt_path):
+            print()
+            return
+        if try_python_pdf_libs(input_path, txt_path):
+            print()
+            return
+        pdf_python_fallback(input_path, txt_path)
+        
+    else:
+        print(f"[-] Unsupported file extension: {ext}")
+        
     print()
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("\n=== EPUB to TXT Converter ===")
-        print("Usage: python3 doc2txt.py <file.epub>\n")
+        print("\n=== Document to TXT Converter ===")
+        print("Usage: python doc2txt.py <file.epub | file.pdf>\n")
     else:
-        epub_to_txt(sys.argv[1])
+        convert_file(sys.argv[1])
