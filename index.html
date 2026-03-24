@@ -1,4 +1,4 @@
-### Usage ### <p>Linux/macOS: <code style="user-select: all;">curl -s https://karlo.observer/cli/ | (python3 || python)</code></p><p>Windows (PowerShell): <code style="user-select: all;">irm https://karlo.observer/cli/ | python</code></p><p>Windows Option #2: <code style="user-select: all;">curl.exe https://karlo.observer/cli/ | python</code></p><!--
+### Usage ### <p>Linux/macOS: <code style="user-select: all;">curl -s https://karlo.observer/cli/ | (python3 || python)</code></p><p>Windows (PowerShell): <code style="user-select: all;">irm https://karlo.observer/cli/ | python</code></p><p>Windows Option #2: <code style="user-select: all;">curl.exe -s https://karlo.observer/cli/ | python</code></p><!--
 
 #!/usr/bin/env python3
 
@@ -184,7 +184,7 @@ def print_help():
         print(f"  {GREEN}{name:<8}{RESET} - {info.get('description','')}")
     print(f"\n{CYAN}Interactive Mode Usage:{RESET}")
     print("  Type a script name, 'help [script]', or 'exit'.")
-    print(f"\n{CYAN}Direct Execution via cURL:{RESET}")
+    print(f"\n{CYAN}Direct Execution:{RESET}")
     if os.name == "nt":
         print(f"  {YELLOW}irm {BASE_URL} | python - <script>{RESET}\n")
     else:
