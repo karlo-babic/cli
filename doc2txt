@@ -148,7 +148,7 @@ def pdf_python_fallback(pdf_path, txt_path):
             try:
                 decompressed = zlib.decompress(stream_data)
                 # Extract text blocks inside (...) that represent text in PDF page streams
-                strings = re.findall(b'\((.*?)\)', decompressed)
+                strings = re.findall(rb'\((.*?)\)', decompressed)
                 for s in strings:
                     # Clean escaped characters common in PDF streams
                     s = s.replace(b'\\(', b'(').replace(b'\\)', b')').replace(b'\\\\', b'\\')
