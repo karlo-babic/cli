@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Bundle: A CLI tool to flatten a codebase into a single text file.
-Usage: python bundle.py <output_file> <root_dir> [.ext1 .ext2 ...]
+Bundle: A CLI tool to flatten a local codebase or public Git repository into a single text file.
+Usage: python bundle.py <output_file> <root_dir_or_url> [.ext1 .ext2 ...]
 """
 
 import os
 import sys
+import tempfile
+import subprocess
+import contextlib
 from datetime import datetime
 
 # ---------------- CONFIG ----------------
@@ -47,11 +50,29 @@ def is_binary(filepath):
         return True
 
 
+def clone_repository(url, dest_dir):
+    """Clones a git repository into a target directory with depth 1 to speed up processing."""
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", url, dest_dir],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"\n[-] Error cloning repository: {e.stderr}\n")
+        sys.exit(1)
+    except FileNotFoundError:
+        print("\n[-] Error: 'git' command not found. Please install Git to bundle from a URL.\n")
+        sys.exit(1)
+
+
 def collect_files(root_dir, allowed_extensions):
     file_paths = []
 
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        # filter directories in-place
+        # Filter directories in-place
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
 
         for filename in filenames:
@@ -91,13 +112,13 @@ def read_file_with_limit(filepath):
     return content, truncated
 
 
-def write_output(root_dir, files, output_file):
+def write_output(source_name, files, output_file):
     try:
         with open(output_file, "w", encoding="utf-8") as out:
 
             # -------- GLOBAL HEADER --------
             out.write("===== CODEBASE EXPORT =====\n")
-            out.write(f"ROOT: {os.path.abspath(root_dir)}\n")
+            out.write(f"SOURCE: {source_name}\n")
             out.write(f"TOTAL FILES: {len(files)}\n")
             out.write(f"GENERATED: {datetime.now().isoformat()}\n")
             out.write("===========================\n\n")
@@ -129,12 +150,13 @@ def write_output(root_dir, files, output_file):
 def main():
     if len(sys.argv) < 3:
         print("\n=== Codebase Bundler ===")
-        print("Usage: python bundle.py <output_file> <root_dir> [ext1 ext2 ...]")
-        print("Example: python bundle.py dump.txt ./my_project .py .js .css\n")
+        print("Usage: python bundle.py <output_file> <root_dir_or_url> [ext1 ext2 ...]")
+        print("Example 1: python bundle.py dump.txt ./my_project .py .js .css")
+        print("Example 2: python bundle.py dump.txt https://github.com/user/repo .py\n")
         sys.exit(1)
 
     output_file = sys.argv[1]
-    root_dir = sys.argv[2]
+    root_arg = sys.argv[2]
     
     # Process optional extensions: ensure they start with a dot and are lowercase
     allowed_extensions = set()
@@ -144,21 +166,36 @@ def main():
                 ext = "." + ext
             allowed_extensions.add(ext.lower())
 
-    if not os.path.isdir(root_dir):
-        print(f"\n[-] Error: The directory '{root_dir}' does not exist.\n")
-        sys.exit(1)
+    is_url = root_arg.startswith(("http://", "https://", "git@"))
 
     print("\n=== Codebase Bundler ===")
-    print(f"[*] Scanning: {root_dir}")
-    if allowed_extensions:
-        print(f"[*] Filtering for extensions: {', '.join(allowed_extensions)}")
-    else:
-        print("[*] No extension list provided. Using default exclusion list.")
 
-    files = collect_files(root_dir, allowed_extensions)
-    write_output(root_dir, files, output_file)
-    
-    print(f"[+] Done. Exported {len(files)} files to {output_file}\n")
+    # ExitStack ensures temporary directories are cleaned up gracefully if used
+    with contextlib.ExitStack() as stack:
+        if is_url:
+            print(f"[*] Cloning repository: {root_arg} ...")
+            temp_dir = stack.enter_context(tempfile.TemporaryDirectory())
+            clone_repository(root_arg, temp_dir)
+            
+            root_dir = temp_dir
+            source_name = root_arg
+        else:
+            root_dir = root_arg
+            source_name = os.path.abspath(root_dir)
+            if not os.path.isdir(root_dir):
+                print(f"\n[-] Error: The directory '{root_dir}' does not exist.\n")
+                sys.exit(1)
+
+        print(f"[*] Scanning: {source_name}")
+        if allowed_extensions:
+            print(f"[*] Filtering for extensions: {', '.join(allowed_extensions)}")
+        else:
+            print("[*] No extension list provided. Using default exclusion list.")
+
+        files = collect_files(root_dir, allowed_extensions)
+        write_output(source_name, files, output_file)
+        
+        print(f"[+] Done. Exported {len(files)} files to {output_file}\n")
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ SCRIPTS = {
         ]
     },
     "bundle": {
-        "description": "Bundle a directory structure and file contents into a single text file",
+        "description": "Bundle a local directory or public Git repo into a single txt file",
         "url": BASE_URL + "bundle",
         "args": [
             {
@@ -84,8 +84,8 @@ SCRIPTS = {
                 "description": "Path where the bundled text file will be saved"
             },
             {
-                "name": "root_dir",
-                "description": "Path to the source directory to scan"
+                "name": "root_dir_or_url",
+                "description": "Path to the local source directory or public Git repository URL to scan"
             },
             {
                 "name": "extensions",
