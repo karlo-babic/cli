@@ -164,6 +164,8 @@ def run_script(name, args=None):
         cmd = [python_cmd, tmp.name] + args
         try:
             subprocess.run(cmd)
+        except KeyboardInterrupt:
+            print()
         except Exception as e:
             err(f"Execution failed: {e}")
             print()
