@@ -112,6 +112,25 @@ SCRIPTS = {
             }
         ]
     },
+    "remote": {
+        "description": "Share a local file securely to a remote web viewer",
+        "url": BASE_URL + "remote",
+        "hidden": True,
+        "args": [
+            {
+                "name": "session_id",
+                "description": "Unique identifier for this sharing session"
+            },
+            {
+                "name": "file",
+                "description": "Path to the local file to share"
+            },
+            {
+                "name": "max_lines",
+                "description": "Optional: Maximum number of lines to share from the bottom"
+            }
+        ]
+    },
 }
 
 if _C:
@@ -173,6 +192,8 @@ def run_script(name, args=None):
 def print_help():
     print(f"\n{CYAN}Available Scripts:{RESET}")
     for name, info in SCRIPTS.items():
+        if info.get("hidden"):
+            continue
         print(f"  {GREEN}{name:<8}{RESET} - {info.get('description','')}")
     print(f"\n{CYAN}Interactive Mode Usage:{RESET}")
     print("  Type a script name, 'help [script]', or 'exit'.")

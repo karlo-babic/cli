@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""
+Name: Share a local file securely to a remote web viewer.
+Usage: remote [session_id] [file] [max_lines]
+"""
+
+import os
+import sys
+import time
+import json
+import getpass
+import urllib.request
+import urllib.error
+import collections
+
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
+
+CONSTANTS = {
+    "FIREBASE_API_KEY": "AIzaSyAdrCEDbg9jDw2ebGkyrxXCYDoJsCVjaNs",
+    "FIREBASE_DB_URL": "https://remote-viewer-6e71e-default-rtdb.europe-west1.firebasedatabase.app/",
+    "FIREBASE_EMAIL": "karlosystem@karlo.observer"
+}
+
+def authenticate(password):
+    api_key = CONSTANTS["FIREBASE_API_KEY"]
+    email = CONSTANTS["FIREBASE_EMAIL"]
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
+    
+    payload = json.dumps({
+        "email": email,
+        "password": password,
+        "returnSecureToken": True
+    }).encode("utf-8")
+    
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return data["idToken"]
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401):
+            err("Authentication failed: Invalid password.")
+        else:
+            err(f"Authentication failed: HTTP {e.code}")
+        print()
+        sys.exit(1)
+    except Exception as e:
+        err(f"Network error during authentication: {e}")
+        print()
+        sys.exit(1)
+
+def push_data(session_id, token, text, filename):
+    db_url = CONSTANTS["FIREBASE_DB_URL"].rstrip("/")
+    url = f"{db_url}/sessions/{session_id}.json?auth={token}"
+    
+    payload = json.dumps({
+        "text": text,
+        "filename": filename,
+        "last_updated": int(time.time())
+    }).encode("utf-8")
+    
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="PUT")
+    try:
+        with urllib.request.urlopen(req) as response:
+            pass
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            warn("Session token expired. Restart the script to re-authenticate.")
+        else:
+            warn(f"Failed to push update (HTTP {e.code})")
+    except Exception as e:
+        warn(f"Network error while pushing update: {e}")
+
+def delete_session(session_id, token):
+    db_url = CONSTANTS["FIREBASE_DB_URL"].rstrip("/")
+    url = f"{db_url}/sessions/{session_id}.json?auth={token}"
+    req = urllib.request.Request(url, method="DELETE")
+    try:
+        with urllib.request.urlopen(req) as response:
+            pass
+    except Exception:
+        pass
+
+def read_file(filepath, max_lines):
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            if max_lines is not None:
+                lines = collections.deque(f, maxlen=max_lines)
+                return "".join(lines)
+            else:
+                return f.read()
+    except Exception as e:
+        warn(f"Failed to read file: {e}")
+        return ""
+
+def main():
+    if len(sys.argv) < 3:
+        section("Remote Setup")
+        print("Usage: remote [session_id] [file] [max_lines]")
+        print()
+        sys.exit(1)
+
+    session_id = sys.argv[1]
+    filepath = sys.argv[2]
+    
+    max_lines = None
+    if len(sys.argv) >= 4:
+        try:
+            max_lines = int(sys.argv[3])
+        except ValueError:
+            section("Remote Setup")
+            err(f"max_lines must be an integer, got: {sys.argv[3]}")
+            print()
+            sys.exit(1)
+
+    section("Remote Session Setup")
+
+    if not os.path.exists(filepath):
+        err(f"File not found: {filepath}")
+        print()
+        sys.exit(1)
+
+    filename = os.path.basename(filepath)
+
+    info(f"Session ID  : {session_id}")
+    info(f"Target file : {filepath}")
+    if max_lines:
+        info(f"Limit       : {max_lines} lines")
+    
+    password = getpass.getpass("Password: ")
+    info("Authenticating...")
+    token = authenticate(password)
+    ok("Authenticated successfully.")
+
+    info("Pushing initial file state...")
+    current_text = read_file(filepath, max_lines)
+    push_data(session_id, token, current_text, filename)
+    last_mtime = os.stat(filepath).st_mtime
+
+    ok(f"Sharing active. Open web console and run: remote {session_id}")
+    info("Watching for file changes. Press Ctrl+C to stop.")
+
+    try:
+        while True:
+            time.sleep(1)
+            try:
+                current_mtime = os.stat(filepath).st_mtime
+                if current_mtime != last_mtime:
+                    last_mtime = current_mtime
+                    info("File modified, pushing update...")
+                    current_text = read_file(filepath, max_lines)
+                    push_data(session_id, token, current_text, filename)
+            except FileNotFoundError:
+                warn("File was deleted or moved. Waiting for it to return...")
+            except Exception as e:
+                warn(f"Error checking file: {e}")
+                
+    except KeyboardInterrupt:
+        print()
+        info("Shutting down session...")
+        delete_session(session_id, token)
+        ok("Session wiped from database. Exiting.")
+
+    print()
+
+if __name__ == "__main__":
+    main()
