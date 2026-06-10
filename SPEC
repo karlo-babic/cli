@@ -112,9 +112,9 @@ Scripts must work with Python 3 stdlib only. No pip installs required to run
 the basic functionality. External CLI tools (mutool, pandoc, nvidia-smi) are
 tried opportunistically via subprocess and degraded gracefully when absent.
 
-When a tool is unavailable, call err() with a short install hint:
+When a tool is unavailable, call warn() with a short install hint:
 
-    err("mutool not available  (install: apt install mupdf-tools / brew install mupdf)")
+    warn("mutool not available  (install: apt install mupdf-tools / brew install mupdf)")
 
 Then try the next strategy. Never crash because an optional tool is missing.
 
