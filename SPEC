@@ -1,0 +1,145 @@
+CLI Script Specification
+========================
+
+Every script in this repo is a self-contained Python 3 file that can be piped
+directly into Python (curl | python) or executed locally. This file defines the
+structure and conventions all scripts must follow.
+
+
+File structure
+--------------
+
+Every script follows this exact top-to-bottom layout:
+
+    #!/usr/bin/env python3
+    """
+    Name: One-line description.
+    Usage: scriptname [arg1] [arg2]
+    """
+
+Scripts are invoked by name, not as Python files. The Usage line must use the
+bare script name (e.g. "search", not "python search.py" or "search.py").
+
+    import ...       # stdlib only - no third-party imports at module level
+                     # subprocess calls to external tools are fine
+
+    # -- fmt ---------------------------------------------------------------------
+    import os as _os; _e = _os.environ
+    _C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+    def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+    def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+    def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+    def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+    def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+    # -----------------------------------------------------------------------------
+
+    CONSTANTS = ...      # optional
+
+    def helper(): ...    # implementation functions
+
+    def main():
+        section("Script Title")
+        ...
+        print()          # trailing blank line
+
+    if __name__ == "__main__":
+        main()
+
+Copy the fmt block verbatim. Do not modify it, split it across files, or replace
+it with imports. It must be identical in every script so that look and feel is
+enforced at the source level, not by convention.
+
+
+Output conventions
+------------------
+
+section("Title")     Start of script output and major phases. Prints a blank
+                     line before the header. Call once at the top of main(),
+                     and again when output naturally splits into sections
+                     (e.g. sysinfo uses one per hardware category).
+
+info("msg")          Progress and status during execution. Use for steps the
+                     user should know are happening: connecting, scanning,
+                     processing. Do not spam - one per logical step.
+
+ok("msg")            Confirms a successful outcome. Use when the script
+                     produces a specific artifact or completes a task:
+                     "Done. Exported 14 files to dump.txt"
+
+err("msg")           Fatal errors. Always followed by print() and sys.exit(1).
+                     The prefix [-] signals that the script has failed.
+
+warn("msg")          Degraded but continuing execution: a tool is missing and
+                     a fallback is being tried, a feature is unavailable on
+                     this platform, or a query returns no results. Use instead
+                     of err() whenever the script does not exit.
+
+print()              Blank line. Always end main() with one. Add between
+                     section() and content if the section header needs visual
+                     separation. Do not use for padding inside content blocks.
+
+Usage message        When args are wrong or missing, call section() first,
+                     then print plain-text usage lines, then print(), then
+                     sys.exit(1). No err() prefix on usage lines.
+
+
+Fatal error pattern
+-------------------
+
+    err("Human-readable description of what went wrong")
+    print()
+    sys.exit(1)
+
+Always print() before sys.exit so the terminal prompt appears on its own line.
+
+
+Encoding
+--------
+
+All source files must be pure ASCII. No Unicode characters in comments,
+strings, or identifiers. Use escape sequences for any non-ASCII output.
+
+File operations must declare encoding explicitly:
+
+    open(path, "r", encoding="utf-8", errors="replace")
+    open(path, "w", encoding="utf-8")
+
+
+Dependencies
+------------
+
+Scripts must work with Python 3 stdlib only. No pip installs required to run
+the basic functionality. External CLI tools (mutool, pandoc, nvidia-smi) are
+tried opportunistically via subprocess and degraded gracefully when absent.
+
+When a tool is unavailable, call err() with a short install hint:
+
+    err("mutool not available  (install: apt install mupdf-tools / brew install mupdf)")
+
+Then try the next strategy. Never crash because an optional tool is missing.
+
+
+Platform handling
+-----------------
+
+Use platform.system() to branch on "Windows", "Linux", "Darwin". When a
+feature is unavailable on a platform, print an informative message rather
+than silently returning nothing.
+
+
+Adding a new script
+-------------------
+
+1. Create the file following the structure above.
+2. Add an entry to the SCRIPTS dict in index.html:
+
+       "scriptname": {
+           "description": "One sentence, same style as the others.",
+           "url": BASE_URL + "scriptname",
+           "args": [                          # omit key if no args
+               {
+                   "name": "argname",
+                   "description": "Optional: ..."
+               }
+           ]
+       }

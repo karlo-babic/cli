@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
+"""
+Sysinfo: Print a summary of OS, CPU, RAM, GPU, and disk information for the current system.
+Usage: sysinfo
+"""
 
 import os
 import sys
 import shutil
 import platform
 import subprocess
+
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
 
 def run_command(cmd):
     try:
@@ -18,7 +32,7 @@ def get_cpu_info():
     cpu = {}
     has_lscpu = run_command("which lscpu")
     if not has_lscpu and platform.system() == "Linux":
-        print("note: lscpu not found, CPU model info may be limited  (install: util-linux)", file=sys.stderr)
+        warn("lscpu not found, CPU model info may be limited  (install: util-linux)")
     cpu["model"] = run_command("lscpu | grep 'Model name' | cut -d: -f2").strip() if has_lscpu else platform.processor()
     cpu["cores"] = os.cpu_count()
     cpu["arch"] = platform.machine()
@@ -30,7 +44,7 @@ def get_ram_info():
 
     if os_name == "Linux":
         try:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8", errors="replace") as f:
                 data = f.read()
             total = int([x for x in data.splitlines() if "MemTotal" in x][0].split()[1])
             available = int([x for x in data.splitlines() if "MemAvailable" in x][0].split()[1])
@@ -76,14 +90,21 @@ def get_ram_info():
     return meminfo
 
 def get_gpu_info():
+    os_name = platform.system()
+    if os_name == "Windows":
+        result = run_command('powershell -Command "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"')
+        return result or "Not available"
+    elif os_name == "Darwin":
+        result = run_command("system_profiler SPDisplaysDataType | grep 'Chipset Model'")
+        return result or "Not available"
     gpu = run_command("lspci | grep -i 'vga\\|3d\\|2d'")
     return gpu or "Not available"
 
 def get_disk_info():
     disks = []
+    os_name = platform.system()
 
-    # Always check / and /home
-    for path in ["/", "/home"]:
+    def add_disk(path):
         try:
             usage = shutil.disk_usage(path)
             disks.append({
@@ -97,24 +118,30 @@ def get_disk_info():
         except Exception:
             pass
 
-    # Check mounted subdirectories in /media and /mnt
-    for base in ["/media", "/mnt"]:
-        if os.path.exists(base):
-            for name in os.listdir(base):
-                full_path = os.path.join(base, name)
+    if os_name == "Windows":
+        import string
+        for letter in string.ascii_uppercase:
+            path = f"{letter}:\\"
+            if os.path.exists(path):
+                add_disk(path)
+
+    elif os_name == "Darwin":
+        add_disk("/")
+        if os.path.exists("/Volumes"):
+            for name in os.listdir("/Volumes"):
+                full_path = os.path.join("/Volumes", name)
                 if os.path.ismount(full_path):
-                    try:
-                        usage = shutil.disk_usage(full_path)
-                        disks.append({
-                            "mount": full_path,
-                            "filesystem": full_path,
-                            "size": f"{usage.total // (1024**3)}G",
-                            "used": f"{usage.used // (1024**3)}G",
-                            "avail": f"{usage.free // (1024**3)}G",
-                            "use%": f"{int(usage.used / usage.total * 100)}%"
-                        })
-                    except Exception:
-                        pass
+                    add_disk(full_path)
+
+    else:
+        for path in ["/", "/home"]:
+            add_disk(path)
+        for base in ["/media", "/mnt"]:
+            if os.path.exists(base):
+                for name in os.listdir(base):
+                    full_path = os.path.join(base, name)
+                    if os.path.ismount(full_path):
+                        add_disk(full_path)
 
     return disks
 
@@ -126,25 +153,22 @@ def get_os_info():
         "hostname": platform.node()
     }
 
-def print_section(title):
-    print(f"\n=== {title} ===")
-
 def print_key_values(data, suffix=""):
     for k, v in data.items():
         val_str = f"{v} {suffix}".strip() if suffix else str(v)
         print(f"  {k.capitalize():<12}: {val_str}")
 
 def main():
-    print_section("OS Information")
+    section("OS Information")
     print_key_values(get_os_info())
 
-    print_section("CPU Information")
+    section("CPU Information")
     print_key_values(get_cpu_info())
 
-    print_section("Memory (RAM)")
+    section("Memory (RAM)")
     print_key_values(get_ram_info(), suffix="MB")
 
-    print_section("GPU Information")
+    section("GPU Information")
     gpu = get_gpu_info()
     if gpu and gpu != "Not available":
         for line in gpu.splitlines():
@@ -152,7 +176,7 @@ def main():
     else:
         print(f"  {gpu}")
 
-    print_section("Disk Usage")
+    section("Disk Usage")
     disks = get_disk_info()
     if not disks:
         print("  No disk information available.")
@@ -164,9 +188,6 @@ def main():
             print(f"  {d['mount']:<15} {d['size']:<6} {d['used']:<6} {d['avail']:<6} {d['use%']}")
     
     print()
-
-def run(args=None):
-    main()
 
 if __name__ == "__main__":
     main()

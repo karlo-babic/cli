@@ -16,6 +16,15 @@ try:
 except ImportError:
     pass
 
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+# -----------------------------------------------------------------------------
+
 BASE_URL = "https://karlo.observer/cli/"
 
 SCRIPTS = {
@@ -105,30 +114,7 @@ SCRIPTS = {
     },
 }
 
-def supports_color():
-    if "NO_COLOR" in os.environ:
-        return False
-
-    # Explicit opt-in
-    if os.environ.get("FORCE_COLOR") == "1":
-        return True
-
-    # Windows Terminal / modern terminals
-    if os.environ.get("WT_SESSION"):
-        return True
-
-    # ANSI support indicators
-    if os.environ.get("ANSICON") or os.environ.get("TERM_PROGRAM"):
-        return True
-
-    # TERM-based detection (Linux/macOS)
-    term = os.environ.get("TERM", "")
-    if term and term != "dumb":
-        return True
-
-    return False
-
-if supports_color():
+if _C:
     RED = "\033[31m"
     GREEN = "\033[32m"
     YELLOW = "\033[33m"
@@ -151,32 +137,36 @@ def get_python_cmd():
 
 def run_script(name, args=None):
     if name not in SCRIPTS:
-        print(f"\n{RED}[-] Unknown script: {name}{RESET}\n")
+        err(f"Unknown script: {name}")
+        print()
         return
 
     args = args or []
     script_url = SCRIPTS[name]["url"]
 
     # Download the script to a temporary file
-    with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".py") as tmp:
+    with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".py", encoding="utf-8") as tmp:
         try:
             with urllib.request.urlopen(script_url) as response:
                 tmp.write(response.read().decode())
             tmp.flush()
         except Exception as e:
-            print(f"\n{RED}[-] Failed to fetch script: {e}{RESET}\n")
+            err(f"Failed to fetch script: {e}")
+            print()
             return
 
         # Execute the downloaded script with forwarded arguments
         python_cmd = get_python_cmd()
         if not python_cmd:
-            print(f"\n{RED}[-] No Python interpreter found{RESET}\n")
+            err("No Python interpreter found")
+            print()
             return
         cmd = [python_cmd, tmp.name] + args
         try:
             subprocess.run(cmd)
         except Exception as e:
-            print(f"\n{RED}[-] Execution failed: {e}{RESET}\n")
+            err(f"Execution failed: {e}")
+            print()
 
 def print_help():
     print(f"\n{CYAN}Available Scripts:{RESET}")
@@ -237,13 +227,14 @@ def main():
                     print_help()
                 else:
                     script_name = parts[1]
-                    info = SCRIPTS.get(script_name)
-                    if not info:
-                        print(f"\n{RED}[-] No help available for unknown script '{script_name}'{RESET}\n")
+                    script_info = SCRIPTS.get(script_name)
+                    if not script_info:
+                        err(f"No help available for unknown script '{script_name}'")
+                        print()
                     else:
-                        print(f"\n{CYAN}=== {script_name} ==={RESET}")
-                        print(f"{info.get('description','')}")
-                        args = info.get("args", [])
+                        section(script_name)
+                        print(f"{script_info.get('description','')}")
+                        args = script_info.get("args", [])
                         if args:
                             print(f"\n{YELLOW}Arguments:{RESET}")
                             for arg in args:

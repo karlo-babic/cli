@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Bundle: A CLI tool to flatten a local codebase or public Git repository into a single text file.
-Usage: python bundle.py <output_file> <root_dir_or_url> [.ext1 .ext2 ...]
+Usage: bundle <output_file> <root_dir_or_url> [.ext1 .ext2 ...]
 """
 
 import os
@@ -11,13 +11,22 @@ import subprocess
 import contextlib
 from datetime import datetime
 
-# ---------------- CONFIG ----------------
-# Directories we always skip
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
+
+# config - directories we always skip
 IGNORED_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"
 }
 
-# Extensions we skip ONLY if no specific extensions are provided as arguments
+# extensions we skip ONLY if no specific extensions are provided as arguments
 IGNORED_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico",
     ".exe", ".dll", ".so", ".dylib",
@@ -26,7 +35,6 @@ IGNORED_EXTENSIONS = {
 }
 
 MAX_FILE_LINES = 10000  # truncation limit
-# ----------------------------------------
 
 
 def is_valid_file(filepath, allowed_extensions):
@@ -61,10 +69,12 @@ def clone_repository(url, dest_dir):
             text=True
         )
     except subprocess.CalledProcessError as e:
-        print(f"\n[-] Error cloning repository: {e.stderr}\n")
+        err(f"Error cloning repository: {e.stderr}")
+        print()
         sys.exit(1)
     except FileNotFoundError:
-        print("\n[-] Error: 'git' command not found. Please install Git to bundle from a URL.\n")
+        err("'git' not found. Install Git to bundle from a URL.")
+        print()
         sys.exit(1)
 
 
@@ -116,20 +126,20 @@ def write_output(source_name, files, output_file):
     try:
         with open(output_file, "w", encoding="utf-8") as out:
 
-            # -------- GLOBAL HEADER --------
+            # global header
             out.write("===== CODEBASE EXPORT =====\n")
             out.write(f"SOURCE: {source_name}\n")
             out.write(f"TOTAL FILES: {len(files)}\n")
             out.write(f"GENERATED: {datetime.now().isoformat()}\n")
             out.write("===========================\n\n")
 
-            # -------- FILE INDEX --------
+            # file index
             out.write("===== FILE INDEX =====\n")
             for i, (rel_path, _) in enumerate(files, 1):
                 out.write(f"{i}. {rel_path}\n")
             out.write("======================\n\n")
 
-            # -------- FILE CONTENTS --------
+            # file contents
             for rel_path, full_path in files:
                 content, truncated = read_file_with_limit(full_path)
 
@@ -143,16 +153,18 @@ def write_output(source_name, files, output_file):
 
                 out.write("\n===== FILE END =====\n\n")
     except Exception as e:
-        print(f"\n[-] Error writing to output file: {e}\n")
+        err(f"Error writing to output file: {e}")
+        print()
         sys.exit(1)
 
 
 def main():
     if len(sys.argv) < 3:
-        print("\n=== Codebase Bundler ===")
-        print("Usage: python bundle.py <output_file> <root_dir_or_url> [ext1 ext2 ...]")
-        print("Example 1: python bundle.py dump.txt ./my_project .py .js .css")
-        print("Example 2: python bundle.py dump.txt https://github.com/user/repo .py\n")
+        section("Codebase Bundler")
+        print("Usage: bundle <output_file> <root_dir_or_url> [.ext1 .ext2 ...]")
+        print("Example 1: bundle dump.txt ./my_project .py .js .css")
+        print("Example 2: bundle dump.txt https://github.com/user/repo .py")
+        print()
         sys.exit(1)
 
     output_file = sys.argv[1]
@@ -168,34 +180,36 @@ def main():
 
     is_url = root_arg.startswith(("http://", "https://", "git@"))
 
-    print("\n=== Codebase Bundler ===")
+    section("Codebase Bundler")
 
     # ExitStack ensures temporary directories are cleaned up gracefully if used
     with contextlib.ExitStack() as stack:
         if is_url:
-            print(f"[*] Cloning repository: {root_arg} ...")
+            info(f"Cloning repository: {root_arg} ...")
             temp_dir = stack.enter_context(tempfile.TemporaryDirectory())
             clone_repository(root_arg, temp_dir)
-            
+
             root_dir = temp_dir
             source_name = root_arg
         else:
             root_dir = root_arg
             source_name = os.path.abspath(root_dir)
             if not os.path.isdir(root_dir):
-                print(f"\n[-] Error: The directory '{root_dir}' does not exist.\n")
+                err(f"Directory not found: '{root_dir}'")
+                print()
                 sys.exit(1)
 
-        print(f"[*] Scanning: {source_name}")
+        info(f"Scanning: {source_name}")
         if allowed_extensions:
-            print(f"[*] Filtering for extensions: {', '.join(allowed_extensions)}")
+            info(f"Filtering for extensions: {', '.join(allowed_extensions)}")
         else:
-            print("[*] No extension list provided. Using default exclusion list.")
+            info("No extension list provided. Using default exclusion list.")
 
         files = collect_files(root_dir, allowed_extensions)
         write_output(source_name, files, output_file)
-        
-        print(f"[+] Done. Exported {len(files)} files to {output_file}\n")
+
+        ok(f"Done. Exported {len(files)} files to {output_file}")
+        print()
 
 
 if __name__ == "__main__":

@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
+"""
+Search: Semantic full-text search over a plain-text file using TF-IDF and fuzzy matching.
+Usage: search <file> "<query>"
+"""
+
 import os
 import sys
 import math
 import re
 import heapq
 from collections import Counter
+
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
 
 # A basic list of English stop words to improve semantic focus
 STOP_WORDS = {
@@ -107,14 +122,7 @@ def levenshtein_ratio(s1, s2):
     distance = prev_row[-1]
     return 1.0 - (distance / max(len(s1), len(s2)))
 
-def supports_color():
-    if not sys.stdout.isatty(): return False
-    if "NO_COLOR" in os.environ: return False
-    if os.name == 'nt':
-        return "TERM" in os.environ or os.environ.get("ANSICON") is not None
-    return os.environ.get("TERM") not in (None, "dumb")
-
-COLOR_ENABLED = supports_color()
+COLOR_ENABLED = _C
 
 def highlight_fuzzy(text, raw_query_words, threshold=0.75):
     """Highlight words in text with ANSI colors or brackets if unsupported."""
@@ -131,16 +139,16 @@ def highlight_fuzzy(text, raw_query_words, threshold=0.75):
     return re.sub(r'\b[A-Za-z0-9]+\b', repl, text)
 
 def search(query, filepath, top_k=5, fuzzy_threshold=0.75):
-    print("\n[*] Building idf weights (Pass 1)...")
+    info("Building index (pass 1)...")
     idf_dict = build_idf(filepath)
-    
+
     query_vec = get_vector(query, idf_dict)
     raw_query_words = re.findall(r'[a-z0-9]+', query.lower())
-    
-    top_results_heap = []
-    tie_breaker = 0 
 
-    print("[*] Searching document (Pass 2)...")
+    top_results_heap = []
+    tie_breaker = 0
+
+    info("Searching document (pass 2)...")
     for paragraph in read_paragraphs(filepath):
         para_vec = get_vector(paragraph, idf_dict)
         if not para_vec:
@@ -166,27 +174,31 @@ def search(query, filepath, top_k=5, fuzzy_threshold=0.75):
     return results
 
 def main():
+    section("Fuzzy File Search")
+
     if len(sys.argv) != 3:
-        print("\n=== Fuzzy File Search ===")
-        print("Usage: python search.py <file> \"<query>\"\n")
+        print("Usage: search <file> \"<query>\"")
+        print()
         sys.exit(1)
 
     filepath = sys.argv[1]
     query = sys.argv[2]
-    
+
     if not os.path.exists(filepath):
-        print(f"\n[-] File not found: {filepath}\n")
+        err(f"File not found: {filepath}")
+        print()
         sys.exit(1)
-        
+
     results = search(query, filepath)
 
     if not results:
-        print("\n[-] No matching results found.\n")
+        warn("No matching results found.")
+        print()
         return
 
-    print("\n=== Search Results ===")
+    section("Search Results")
     for idx, (score, r) in enumerate(results, 1):
-        print(f"\n[{idx}] (Match Score: {score:.3f})\n{r}")
+        print(f"\n[{idx}] (score: {score:.3f})\n{r}")
     print()
 
 if __name__ == "__main__":

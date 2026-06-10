@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
+"""
+Largest: List the N largest files under a directory tree.
+Usage: largest [path] [limit]
+"""
 
 import os
 import sys
+
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
 
 def human_readable(size):
     for unit in ["B", "K", "M", "G", "T"]:
@@ -21,7 +35,8 @@ def parse_args():
         try:
             limit = int(sys.argv[2])
         except ValueError:
-            print(f"[-] Invalid number for limit: {sys.argv[2]}")
+            err(f"Invalid number for limit: {sys.argv[2]}")
+            print()
             sys.exit(1)
 
     return path, limit
@@ -31,11 +46,10 @@ def collect_files(root):
     last_len = 0
 
     for dirpath, _, filenames in os.walk(root):
-        display = f"[*] Scanning: {dirpath}"
-        # Truncate to terminal width safely to avoid line wraps ruining the clean carriage return
-        display = display[:75] 
-        print("\r" + display + " " * max(0, last_len - len(display)), end="", flush=True)
-        last_len = len(display)
+        label = f"[*] Scanning: {dirpath}"[:75]
+        colored = ("\033[90m[*]\033[0m" + label[3:]) if _C else label
+        print("\r" + colored + " " * max(0, last_len - len(label)), end="", flush=True)
+        last_len = len(label)
 
         for name in filenames:
             full_path = os.path.join(dirpath, name)
@@ -51,18 +65,18 @@ def collect_files(root):
 def main():
     root, limit = parse_args()
 
-    if not os.path.exists(root):
-        print(f"\n[-] Path does not exist: {root}\n")
-        return
+    section(f"Largest Files in '{root}'")
 
-    print()
+    if not os.path.exists(root):
+        err(f"Path does not exist: {root}")
+        print()
+        sys.exit(1)
+
     files = collect_files(root)
     files.sort(key=lambda x: x[0], reverse=True)
 
     top = files[:limit]
 
-    print(f"=== Largest Files in '{root}' ===")
-    
     if not top:
         print("No files found.")
     else:

@@ -1,15 +1,31 @@
+#!/usr/bin/env python3
+"""
+Drivers: List installed system drivers and their versions.
+Usage: drivers [filter]
+"""
+
 import subprocess
 import platform
 import sys
 import re
 
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
+
 def get_linux_version(module_name):
     """Linux specific: get version using modinfo."""
     try:
-        output = subprocess.check_output(["modinfo", "-F", "version", module_name], 
+        output = subprocess.check_output(["modinfo", "-F", "version", module_name],
                                          stderr=subprocess.DEVNULL).decode().strip()
         return output if output else "N/A"
-    except:
+    except Exception:
         return "N/A"
 
 def get_installed_drivers():
@@ -38,7 +54,7 @@ def get_installed_drivers():
                     
                     if "nvidia" in module_name and version == "N/A":
                         try:
-                            with open("/proc/driver/nvidia/version", "r") as f:
+                            with open("/proc/driver/nvidia/version", "r", encoding="utf-8", errors="replace") as f:
                                 ver_match = re.search(r"Kernel Module\s+([\d\.]+)", f.read())
                                 if ver_match: version = ver_match.group(1)
                         except: pass
@@ -51,26 +67,38 @@ def get_installed_drivers():
             output = subprocess.check_output(["kextstat"]).decode()
             return output
 
-    except Exception as e:
-        return f"[-] Error fetching driver data: {str(e)}"
+        else:
+            warn("Unsupported platform.")
+            return None
 
-if __name__ == "__main__":
+    except Exception as e:
+        warn(f"Error fetching driver data: {e}")
+        return None
+
+
+def main():
     search_term = sys.argv[1].lower() if len(sys.argv) > 1 else None
-    
-    print("\n=== System Drivers ===")
+
+    section("System Drivers")
     driver_data = get_installed_drivers()
-    
-    if search_term and driver_data and not driver_data.startswith("[-]"):
+
+    if driver_data is None:
+        print()
+        sys.exit(1)
+
+    if search_term:
         lines = driver_data.splitlines()
-        # Keep header assuming first two lines are headers/separators
         header = lines[0:2] if len(lines) >= 2 else []
         matches = [line for line in lines[2:] if search_term in line.lower()]
-        
+
         if matches:
             print("\n".join(header + matches))
         else:
-            print(f"[-] No drivers found matching '{search_term}'")
+            warn(f"No drivers found matching '{search_term}'")
     else:
         print(driver_data)
-        
+
     print()
+
+if __name__ == "__main__":
+    main()

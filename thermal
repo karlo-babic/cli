@@ -1,11 +1,26 @@
+#!/usr/bin/env python3
+"""
+Thermal: Report CPU and GPU temperatures from available system sensors.
+Usage: thermal
+"""
+
 import subprocess
 import platform
 import os
 import re
 
-def get_thermal_data():
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
+
+def print_thermal_data():
     os_name = platform.system()
-    results = []
 
     try:
         if os_name == "Linux":
@@ -14,18 +29,19 @@ def get_thermal_data():
                 for zone in os.listdir(thermal_path):
                     if zone.startswith("thermal_zone"):
                         try:
-                            with open(os.path.join(thermal_path, zone, "type"), "r") as f:
+                            with open(os.path.join(thermal_path, zone, "type"), "r", encoding="utf-8", errors="replace") as f:
                                 label = f.read().strip()
-                            with open(os.path.join(thermal_path, zone, "temp"), "r") as f:
+                            with open(os.path.join(thermal_path, zone, "temp"), "r", encoding="utf-8", errors="replace") as f:
                                 temp = int(f.read().strip()) / 1000.0
-                            results.append(f"  {label:<20}: {temp:.1f}\u00B0C")
-                        except: continue
+                            print(f"  {label:<20}: {temp:.1f}\u00B0C")
+                        except Exception:
+                            continue
             else:
-                results.append("  [-] /sys/class/thermal/ not found \u2014 thermal zones not exposed (common in VMs/containers)")
+                warn("/sys/class/thermal/ not found \u2014 thermal zones not exposed (common in VMs/containers)")
 
         elif os_name == "Windows":
+            found = False
             try:
-                # Try WMI ACPI (may fail on most systems)
                 cmd = [
                     "powershell",
                     "-Command",
@@ -35,37 +51,37 @@ def get_thermal_data():
                 temps = re.findall(r"(\d+)", output)
                 for i, t in enumerate(temps):
                     celsius = (int(t) / 10.0) - 273.15
-                    results.append(f"  ThermalZone {i:<8}: {celsius:.1f}\u00B0C")
-            except:
+                    print(f"  ThermalZone {i:<8}: {celsius:.1f}\u00B0C")
+                    found = True
+            except Exception:
                 pass
+            if not found:
+                warn("CPU thermal data not available via standard Windows APIs. Consider LibreHardwareMonitor/OpenHardwareMonitor for full info.")
 
-            # Fallback message if nothing at all
-            if not results:
-                results.append("  [-] CPU thermal data not available via standard Windows APIs. Consider LibreHardwareMonitor/OpenHardwareMonitor for full info.")
-
-        elif os_name == "Darwin":  
+        elif os_name == "Darwin":
             cmd = "sudo powermetrics -n 1 --samplers smc | grep -i 'CPU die temperature'"
             try:
                 output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode()
-                results.append(f"  {output.strip()}")
-            except:
-                results.append("  [-] macOS thermal data requires 'sudo' or isn't accessible via standard CLI.")
+                print(f"  {output.strip()}")
+            except Exception:
+                warn("macOS thermal data requires 'sudo' or isn't accessible via standard CLI.")
 
-        # --- Generic GPU Check (NVIDIA) ---
         try:
             gpu_cmd = ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"]
             gpu_temp = subprocess.check_output(gpu_cmd, stderr=subprocess.DEVNULL).decode().strip()
             if gpu_temp:
-                results.append(f"  {'NVIDIA GPU':<20}: {gpu_temp}.0\u00B0C")
-        except:
+                print(f"  {'NVIDIA GPU':<20}: {float(gpu_temp):.1f}\u00B0C")
+        except Exception:
             pass
 
     except Exception as e:
-        results.append(f"  [-] Error fetching data: {str(e)}")
+        warn(f"Error fetching data: {str(e)}")
 
-    return "\n".join(results) if results else "  [-] No sensors detected."
+
+def main():
+    section("Thermal Sensors")
+    print_thermal_data()
+    print()
 
 if __name__ == "__main__":
-    print("\n=== Thermal Sensors ===")
-    print(get_thermal_data())
-    print()
+    main()
