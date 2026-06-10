@@ -266,7 +266,7 @@ class Stream:
 
                 time.sleep(self.TICK_MS / 1000.0 / 2.0)
         except KeyboardInterrupt:
-            print("\nStream Terminated.\n")
+            print("\n\nStream Terminated.")
 
     def start_local(self, custom_prompt):
         self.load_data()
@@ -314,7 +314,7 @@ class Stream:
             sys.stdout.flush()
 
         except KeyboardInterrupt:
-            print("\nLocal Stream Terminated.\n")
+            print("\n\nLocal Stream Terminated.")
 
 def main():
     section("Stream")
