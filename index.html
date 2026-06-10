@@ -181,13 +181,28 @@ def run_script(name, args=None):
             print()
             return
         cmd = [python_cmd, tmp.name] + args
+        
         try:
-            subprocess.run(cmd)
+            # Use Popen instead of run() so we can manage the interrupt signal
+            p = subprocess.Popen(cmd)
+            p.wait()
         except KeyboardInterrupt:
+            # The user pressed Ctrl+C. The child script also received this signal.
+            # We must wait a few seconds for the child to finish its cleanup routine.
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.terminate() # Force kill if it hangs longer than 5 seconds
             print()
         except Exception as e:
             err(f"Execution failed: {e}")
             print()
+        finally:
+            # Clean up the downloaded temporary file so they don't pile up
+            try:
+                os.remove(tmp.name)
+            except Exception:
+                pass
 
 def print_help():
     print(f"\n{CYAN}Available Scripts:{RESET}")
