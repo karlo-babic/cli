@@ -26,6 +26,10 @@ import re
 import zlib
 
 
+def warn(msg):
+    print(f"[!] {msg}", file=sys.stderr)
+
+
 def try_mutool(input_path, txt_path):
     """Attempt conversion using Artifex mutool."""
     try:
@@ -187,21 +191,26 @@ def convert_file(input_path):
         if try_mutool(input_path, txt_path):
             print()
             return
+        warn("mutool not available, trying pandoc  (install: apt install mupdf-tools / brew install mupdf)")
         if try_pandoc(input_path, txt_path):
             print()
             return
+        warn("pandoc not available, using built-in EPUB parser  (install: apt install pandoc / brew install pandoc)")
         epub_python_fallback(input_path, txt_path)
-        
+
     elif ext == ".pdf":
         if try_mutool(input_path, txt_path):
             print()
             return
+        warn("mutool not available, trying pdftotext  (install: apt install mupdf-tools / brew install mupdf)")
         if try_pdftotext(input_path, txt_path):
             print()
             return
+        warn("pdftotext not available, trying Python libraries  (install: apt install poppler-utils / brew install poppler)")
         if try_python_pdf_libs(input_path, txt_path):
             print()
             return
+        warn("no PDF library available, using basic fallback — output may be incomplete  (install: pip install pypdf)")
         pdf_python_fallback(input_path, txt_path)
         
     else:

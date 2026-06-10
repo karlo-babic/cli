@@ -20,6 +20,8 @@ def get_thermal_data():
                                 temp = int(f.read().strip()) / 1000.0
                             results.append(f"  {label:<20}: {temp:.1f}\u00B0C")
                         except: continue
+            else:
+                results.append("  [-] /sys/class/thermal/ not found \u2014 thermal zones not exposed (common in VMs/containers)")
 
         elif os_name == "Windows":
             try:
