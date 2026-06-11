@@ -191,8 +191,8 @@ def run_script(name, args=None):
             # We must wait a few seconds for the child to finish its cleanup routine.
             try:
                 p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                p.terminate() # Force kill if it hangs longer than 5 seconds
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                p.terminate() # Force kill if it hangs or user presses Ctrl+C again
             print()
         except Exception as e:
             err(f"Execution failed: {e}")
