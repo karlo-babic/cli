@@ -13,7 +13,7 @@ Every script follows this exact top-to-bottom layout:
 
     #!/usr/bin/env python3
     """
-    Name: One-line description.
+    Name of the script: One-line description.
     Usage: scriptname [arg1] [arg2]
     """
 

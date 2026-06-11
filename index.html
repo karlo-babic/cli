@@ -113,21 +113,21 @@ SCRIPTS = {
         ]
     },
     "remote": {
-        "description": "Share a local file securely to a remote web viewer",
+        "description": "Share or view a remote session.",
         "url": BASE_URL + "remote",
         "hidden": True,
         "args": [
             {
                 "name": "session_id",
-                "description": "Unique identifier for this sharing session"
+                "description": "Session to view (omit to view public session)"
             },
             {
                 "name": "file",
-                "description": "Path to the local file to share"
+                "description": "File to share (omit to view)"
             },
             {
                 "name": "max_lines",
-                "description": "Optional: Maximum number of lines to share from the bottom"
+                "description": "Maximum number of lines to share from the bottom"
             }
         ]
     },
