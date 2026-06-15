@@ -2,13 +2,17 @@
 """
 Remote: Share or view a remote session.
 Usage: remote [session_id] [file] [max_lines]
+       remote [session_id] [--cmd "command"] [interval]
 """
 
 import os
+import re
 import sys
 import time
 import json
 import getpass
+import subprocess
+import threading
 import urllib.request
 import urllib.error
 import collections
@@ -23,31 +27,54 @@ def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
 def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
 # -----------------------------------------------------------------------------
 
+_ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+def strip_ansi(text):
+    return _ANSI_RE.sub('', text)
+
 FIREBASE_API_KEY = "AIzaSyAdrCEDbg9jDw2ebGkyrxXCYDoJsCVjaNs"
 FIREBASE_DB_URL  = "https://remote-viewer-6e71e-default-rtdb.europe-west1.firebasedatabase.app/"
 FIREBASE_EMAIL   = "karlosystem@karlo.observer"
 
 def parse_args():
-    if len(sys.argv) == 1:
-        return None, None, None
+    argv = sys.argv[1:]
 
-    session_id = sys.argv[1]
+    cmd = None
+    for i, arg in enumerate(argv):
+        if arg in ("--cmd", "-c") and i + 1 < len(argv):
+            cmd = argv[i + 1]
+            argv = argv[:i] + argv[i + 2:]
+            break
 
-    if len(sys.argv) == 2:
-        return session_id, None, None
+    if not argv:
+        return None, None, None, cmd, 2
 
-    filepath = sys.argv[2]
+    session_id = argv[0]
+
+    if len(argv) == 1:
+        return session_id, None, None, cmd, 2
+
+    if cmd is not None:
+        try:
+            interval = int(argv[1])
+        except ValueError:
+            err(f"interval must be an integer, got: {argv[1]}")
+            print()
+            sys.exit(1)
+        return session_id, None, None, cmd, interval
+
+    filepath = argv[1]
     max_lines = None
 
-    if len(sys.argv) >= 4:
+    if len(argv) >= 3:
         try:
-            max_lines = int(sys.argv[3])
+            max_lines = int(argv[2])
         except ValueError:
-            err(f"max_lines must be an integer, got: {sys.argv[3]}")
+            err(f"max_lines must be an integer, got: {argv[2]}")
             print()
             sys.exit(1)
 
-    return session_id, filepath, max_lines
+    return session_id, filepath, max_lines, None, 1
 
 def authenticate(password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
@@ -59,7 +86,8 @@ def authenticate(password):
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode("utf-8"))["idToken"]
+            data = json.loads(response.read().decode("utf-8"))
+            return {"token": data["idToken"], "refresh": data["refreshToken"]}
     except urllib.error.HTTPError as e:
         if e.code in (400, 401):
             err("Authentication failed: Invalid password.")
@@ -72,17 +100,33 @@ def authenticate(password):
         print()
         sys.exit(1)
 
-def fetch_data(session_id, token=None):
+def refresh_token(auth):
+    url = f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}"
+    payload = f"grant_type=refresh_token&refresh_token={auth['refresh']}".encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            auth["token"] = data["id_token"]
+            auth["refresh"] = data["refresh_token"]
+            return True
+    except Exception as e:
+        warn(f"Token refresh failed: {e}")
+        return False
+
+def fetch_data(session_id, auth=None):
     url = f"{FIREBASE_DB_URL.rstrip('/')}/sessions/{session_id}.json"
-    if token:
-        url += f"?auth={token}"
+    if auth:
+        url += f"?auth={auth['token']}"
     req = urllib.request.Request(url)
     try:
         with urllib.request.urlopen(req) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            warn("Session token expired. Restart the script to re-authenticate.")
+        if e.code == 401 and auth and refresh_token(auth):
+            return fetch_data(session_id, auth)
+        elif e.code == 401:
+            warn("Session token expired and refresh failed.")
         else:
             warn(f"Failed to fetch data (HTTP {e.code})")
         return None
@@ -90,8 +134,8 @@ def fetch_data(session_id, token=None):
         warn(f"Network error while fetching data: {e}")
         return None
 
-def push_data(session_id, token, text, filename):
-    url = f"{FIREBASE_DB_URL.rstrip('/')}/sessions/{session_id}.json?auth={token}"
+def push_data(session_id, auth, text, filename):
+    url = f"{FIREBASE_DB_URL.rstrip('/')}/sessions/{session_id}.json?auth={auth['token']}"
     payload = json.dumps({
         "text": text,
         "filename": filename,
@@ -102,15 +146,17 @@ def push_data(session_id, token, text, filename):
         with urllib.request.urlopen(req):
             pass
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            warn("Session token expired. Restart the script to re-authenticate.")
+        if e.code == 401 and refresh_token(auth):
+            push_data(session_id, auth, text, filename)
+        elif e.code == 401:
+            warn("Session token expired and refresh failed.")
         else:
             warn(f"Failed to push update (HTTP {e.code})")
     except Exception as e:
         warn(f"Network error while pushing update: {e}")
 
-def delete_session(session_id, token):
-    url = f"{FIREBASE_DB_URL.rstrip('/')}/sessions/{session_id}.json?auth={token}"
+def delete_session(session_id, auth):
+    url = f"{FIREBASE_DB_URL.rstrip('/')}/sessions/{session_id}.json?auth={auth['token']}"
     req = urllib.request.Request(url, method="DELETE")
     try:
         with urllib.request.urlopen(req):
@@ -128,12 +174,57 @@ def read_file(filepath, max_lines):
         warn(f"Failed to read file: {e}")
         return ""
 
-def view_session(session_id, token):
+def share_command(session_id, auth, cmd, interval):
+    lines = collections.deque(maxlen=500)
+    lock = threading.Lock()
+
+    def reader(proc, done_event):
+        for line in proc.stdout:
+            with lock:
+                lines.append(strip_ansi(line))
+        done_event.set()
+
+    def launch():
+        done = threading.Event()
+        proc = subprocess.Popen(
+            cmd, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1
+        )
+        threading.Thread(target=reader, args=(proc, done), daemon=True).start()
+        return proc, done
+
+    ok(f"Sharing active. View with: remote {session_id}")
+    info("Press Ctrl+C to stop.")
+
+    proc, done = launch()
+    try:
+        while True:
+            proc_exited = done.wait(timeout=interval)
+            with lock:
+                text = "".join(lines)
+                lines.clear()
+            if not text.strip():
+                continue
+            push_data(session_id, auth, text, cmd)
+            info("Pushed update")
+            if proc_exited:
+                time.sleep(interval)
+                proc, done = launch()
+    except KeyboardInterrupt:
+        proc.terminate()
+        print()
+        info("Shutting down session...")
+        delete_session(session_id, auth)
+        ok("Session wiped from database. Exiting.")
+    print()
+
+def view_session(session_id, auth):
     info(f"Watching session '{session_id}'. Press Ctrl+C to stop.")
     last_updated = None
     try:
         while True:
-            data = fetch_data(session_id, token)
+            data = fetch_data(session_id, auth)
             if data is None:
                 warn(f"No data in session '{session_id}'. Retrying...")
             elif data.get("last_updated") != last_updated:
@@ -151,24 +242,35 @@ def view_session(session_id, token):
         print()
 
 def main():
-    session_id, filepath, max_lines = parse_args()
+    session_id, filepath, max_lines, cmd, interval = parse_args()
 
     if session_id is None:
         section("Remote Public")
         view_session("public", None)
         return
 
-    if filepath is None:
+    if filepath is None and cmd is None:
         section("Remote View")
         info(f"Session ID  : {session_id}")
         password = getpass.getpass("Password: ")
         info("Authenticating...")
-        token = authenticate(password)
+        auth = authenticate(password)
         ok("Authenticated successfully.")
-        view_session(session_id, token)
+        view_session(session_id, auth)
         return
 
     section("Remote Share")
+
+    if cmd is not None:
+        info(f"Session ID  : {session_id}")
+        info(f"Command     : {cmd}")
+        info(f"Interval    : {interval}s")
+        password = getpass.getpass("Password: ")
+        info("Authenticating...")
+        auth = authenticate(password)
+        ok("Authenticated successfully.")
+        share_command(session_id, auth, cmd, interval)
+        return
 
     if not os.path.exists(filepath):
         err(f"File not found: {filepath}")
@@ -183,12 +285,12 @@ def main():
 
     password = getpass.getpass("Password: ")
     info("Authenticating...")
-    token = authenticate(password)
+    auth = authenticate(password)
     ok("Authenticated successfully.")
 
     info("Pushing initial file state...")
     current_text = read_file(filepath, max_lines)
-    push_data(session_id, token, current_text, filename)
+    push_data(session_id, auth, current_text, filename)
     last_mtime = os.stat(filepath).st_mtime
 
     ok(f"Sharing active. View with: remote {session_id}")
@@ -203,7 +305,7 @@ def main():
                     last_mtime = current_mtime
                     info("File modified, pushing update...")
                     current_text = read_file(filepath, max_lines)
-                    push_data(session_id, token, current_text, filename)
+                    push_data(session_id, auth, current_text, filename)
             except FileNotFoundError:
                 warn("File was deleted or moved. Waiting for it to return...")
             except Exception as e:
@@ -211,7 +313,7 @@ def main():
     except KeyboardInterrupt:
         print()
         info("Shutting down session...")
-        delete_session(session_id, token)
+        delete_session(session_id, auth)
         ok("Session wiped from database. Exiting.")
 
     print()

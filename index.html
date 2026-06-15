@@ -30,10 +30,12 @@ BASE_URL = "https://karlo.observer/cli/"
 SCRIPTS = {
     "sysinfo": {
         "description": "Show basic system information",
+        "usage": "sysinfo",
         "url": BASE_URL + "sysinfo"
     },
     "drivers": {
         "description": "Show installed drivers and their versions",
+        "usage": "drivers [filter]",
         "url": BASE_URL + "drivers",
         "args": [
             {
@@ -44,10 +46,12 @@ SCRIPTS = {
     },
     "thermal": {
         "description": "Output temperatures of CPU, GPU, and other system sensors",
+        "usage": "thermal",
         "url": BASE_URL + "thermal"
     },
     "largest": {
         "description": "Show largest files in a directory (recursively)",
+        "usage": "largest [path] [limit]",
         "url": BASE_URL + "largest",
         "args": [
             {
@@ -62,6 +66,7 @@ SCRIPTS = {
     },
     "search": {
         "description": "Fuzzy search large text files",
+        "usage": 'search <file> "<query>"',
         "url": BASE_URL + "search",
         "args": [
             {
@@ -76,6 +81,7 @@ SCRIPTS = {
     },
     "doc2txt": {
         "description": "Convert an EPUB or PDF file to TXT",
+        "usage": "doc2txt <file.epub | file.pdf>",
         "url": BASE_URL + "doc2txt",
         "args": [
             {
@@ -86,6 +92,7 @@ SCRIPTS = {
     },
     "bundle": {
         "description": "Bundle a local directory or public Git repo into a single txt file",
+        "usage": "bundle <output_file> <root_dir_or_url> [.ext1 .ext2 ...]",
         "url": BASE_URL + "bundle",
         "args": [
             {
@@ -104,6 +111,7 @@ SCRIPTS = {
     },
     "stream": {
         "description": "Connect to the deterministic generative text broadcast",
+        "usage": "stream [prompt]",
         "url": BASE_URL + "stream",
         "args": [
             {
@@ -114,6 +122,7 @@ SCRIPTS = {
     },
     "remote": {
         "description": "Share or view a remote session.",
+        "usage": "remote [session_id] [file] [max_lines]\n       remote [session_id] [--cmd \"command\"] [interval]",
         "url": BASE_URL + "remote",
         "hidden": True,
         "args": [
@@ -123,11 +132,19 @@ SCRIPTS = {
             },
             {
                 "name": "file",
-                "description": "File to share (omit to view)"
+                "description": "File to share (omit to view). Use --cmd 'command' instead to share command output."
             },
             {
                 "name": "max_lines",
-                "description": "Maximum number of lines to share from the bottom"
+                "description": "File mode: maximum number of lines to share from the bottom"
+            },
+            {
+                "name": "--cmd 'command'",
+                "description": "Share the output of a shell command instead of a file"
+            },
+            {
+                "name": "interval",
+                "description": "Command mode: push interval in seconds (default: 2)"
             }
         ]
     },
@@ -272,6 +289,8 @@ def main():
                     else:
                         section(script_name)
                         print(f"{script_info.get('description','')}")
+                        if script_info.get("usage"):
+                            print(f"\n{YELLOW}Usage:{RESET} {script_info['usage']}")
                         args = script_info.get("args", [])
                         if args:
                             print(f"\n{YELLOW}Arguments:{RESET}")
