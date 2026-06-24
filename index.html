@@ -120,6 +120,25 @@ SCRIPTS = {
             }
         ]
     },
+    "diff": {
+        "description": "Compare two text files and show what changed (code, LaTeX, Markdown, etc.).",
+        "usage": "diff <old_file> <new_file> [--html]",
+        "url": BASE_URL + "diff",
+        "args": [
+            {
+                "name": "old_file",
+                "description": "The original version of the file"
+            },
+            {
+                "name": "new_file",
+                "description": "The updated version of the file"
+            },
+            {
+                "name": "--html",
+                "description": "Optional: Generate a visual HTML diff file instead of terminal output"
+            }
+        ]
+    },
     "remote": {
         "description": "Share or view a remote session.",
         "usage": "remote [session_id] [file] [max_lines]\n       remote [session_id] [--cmd \"command\"] [interval]",

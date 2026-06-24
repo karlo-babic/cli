@@ -1,0 +1,641 @@
+#!/usr/bin/env python3
+"""
+diff: Show what changed between two text files (LaTeX, code, Markdown, etc.).
+Usage: diff <old_file> <new_file> [--html]
+"""
+
+import os
+import sys
+import re
+import difflib
+import html as _html
+
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
+
+CONTEXT = 3   # unchanged lines to show on each side of a changed block
+MIN_GAP = 4   # only collapse if >= this many lines would be hidden
+
+
+def read_file(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return f.readlines()
+
+
+def patience_diff(old_lines, new_lines):
+    """
+    Patience diff: unique lines serve as alignment anchors; falls back to
+    SequenceMatcher for regions with no unique common lines.
+    """
+    from collections import Counter
+    result = []
+
+    def lcs_unique(a, b):
+        ca, cb = Counter(a), Counter(b)
+        b_pos = {line: j for j, line in enumerate(b)
+                 if ca[line] == 1 and cb[line] == 1}
+        pairs = [(i, b_pos[a[i]]) for i in range(len(a)) if a[i] in b_pos]
+        if not pairs:
+            return []
+        tails, pred = [], [-1] * len(pairs)
+        for idx, (_, bi) in enumerate(pairs):
+            lo, hi = 0, len(tails)
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if pairs[tails[mid]][1] < bi:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            if lo < len(tails):
+                tails[lo] = idx
+            else:
+                tails.append(idx)
+            pred[idx] = tails[lo - 1] if lo > 0 else -1
+        seq, k = [], tails[-1]
+        while k != -1:
+            seq.append(pairs[k])
+            k = pred[k]
+        seq.reverse()
+        return seq
+
+    def fallback(a0, a1, b0, b1):
+        """
+        Similarity-based NW DP fallback. Blank-blank similarity is capped at
+        0.05 so content matches (Jaccard >= 0.25) always beat blank-line matches.
+        This prevents greedy blank-line anchoring from shifting whole paragraphs
+        when a blank line is added or removed between a heading and its text.
+        """
+        ob, nb = old_lines[a0:a1], new_lines[b0:b1]
+        n, m = len(ob), len(nb)
+        if n == 0:
+            if m: result.append(("insert", a0, a0, b0, b1))
+            return
+        if m == 0:
+            result.append(("delete", a0, a1, b0, b0))
+            return
+
+        THRESHOLD = 0.25
+        BLANK_SIM = 0.05
+        NEG = -1e9
+
+        def fsim(a, b):
+            a_blank = not a.strip()
+            b_blank = not b.strip()
+            if a_blank and b_blank:
+                return BLANK_SIM
+            if a_blank or b_blank:
+                return 0.0
+            s = _line_sim(a, b)
+            return s if s >= THRESHOLD else 0.0
+
+        sg = [[fsim(ob[i], nb[j]) for j in range(m)] for i in range(n)]
+
+        dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+        ch = [[0] * (m + 1) for _ in range(n + 1)]
+        for i in range(1, n + 1): ch[i][0] = 1
+        for j in range(1, m + 1): ch[0][j] = 2
+
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                s = sg[i - 1][j - 1]
+                mv = (dp[i - 1][j - 1] + s) if s > 0 else NEG
+                so, sn = dp[i - 1][j], dp[i][j - 1]
+                if mv >= so and mv >= sn:
+                    dp[i][j], ch[i][j] = mv, 0
+                elif so >= sn:
+                    dp[i][j], ch[i][j] = so, 1
+                else:
+                    dp[i][j], ch[i][j] = sn, 2
+
+        i, j = n, m
+        pairs = []
+        while i > 0 or j > 0:
+            c = ch[i][j]
+            if c == 0:
+                pairs.append((i - 1, j - 1)); i -= 1; j -= 1
+            elif c == 1:
+                pairs.append((i - 1, None)); i -= 1
+            else:
+                pairs.append((None, j - 1)); j -= 1
+        pairs.reverse()
+
+        oc, nc = 0, 0
+        for ok, nk in pairs:
+            if ok is not None and nk is not None:
+                tag = "equal" if ob[ok] == nb[nk] else "replace"
+                result.append((tag, a0 + ok, a0 + ok + 1, b0 + nk, b0 + nk + 1))
+                oc, nc = ok + 1, nk + 1
+            elif ok is not None:
+                result.append(("delete", a0 + ok, a0 + ok + 1, b0 + nc, b0 + nc))
+                oc = ok + 1
+            else:
+                result.append(("insert", a0 + oc, a0 + oc, b0 + nk, b0 + nk + 1))
+                nc = nk + 1
+
+    def recurse(a0, a1, b0, b1, depth):
+        a, b = old_lines[a0:a1], new_lines[b0:b1]
+        if not a and not b:
+            return
+        if not a:
+            result.append(("insert", a0, a0, b0, b1)); return
+        if not b:
+            result.append(("delete", a0, a1, b0, b0)); return
+        if depth > 200:
+            fallback(a0, a1, b0, b1); return
+        anchors = lcs_unique(a, b)
+        if not anchors:
+            fallback(a0, a1, b0, b1); return
+        prev_ai = prev_bi = 0
+        for ai, bi in anchors:
+            recurse(a0 + prev_ai, a0 + ai, b0 + prev_bi, b0 + bi, depth + 1)
+            result.append(("equal", a0 + ai, a0 + ai + 1, b0 + bi, b0 + bi + 1))
+            prev_ai, prev_bi = ai + 1, bi + 1
+        recurse(a0 + prev_ai, a1, b0 + prev_bi, b1, depth + 1)
+
+    recurse(0, len(old_lines), 0, len(new_lines), 0)
+
+    merged = []
+    for op in result:
+        if (merged and merged[-1][0] == op[0]
+                and merged[-1][2] == op[1] and merged[-1][4] == op[3]):
+            prev = merged[-1]
+            merged[-1] = (prev[0], prev[1], op[2], prev[3], op[4])
+        else:
+            merged.append(op)
+    return merged
+
+
+def merge_split_paragraphs(opcodes, old_lines, new_lines,
+                           max_gap=4, threshold=0.45):
+    """
+    Merge delete + blank-only-equal + insert triplets where the content blocks
+    are highly similar. Patience diff correctly splits such paragraphs (the
+    blank line between them is equal context), but the HTML view is more useful
+    when they are shown side-by-side with intra-line highlighting.
+    """
+    out, ops, i = [], list(opcodes), 0
+    while i < len(ops):
+        tag, a1, a2, _, b2 = ops[i]
+        if tag == 'delete' and i + 1 < len(ops):
+            k, gap_a = i + 1, a2
+            while k < len(ops) and ops[k][0] == 'equal':
+                _, ea1, ea2, _, _ = ops[k]
+                if (ea2 - ea1 <= max_gap
+                        and all(ln.strip() == '' for ln in old_lines[ea1:ea2])):
+                    gap_a = ea2
+                    k += 1
+                else:
+                    break
+            if k < len(ops) and ops[k][0] == 'insert' and k > i + 1:
+                _, _, _, nb1, nb2 = ops[k]
+                old_txt = ' '.join(
+                    ln.rstrip('\n') for ln in old_lines[a1:a2] if ln.strip())
+                new_txt = ' '.join(
+                    ln.rstrip('\n') for ln in new_lines[nb1:nb2] if ln.strip())
+                if old_txt and new_txt:
+                    s = difflib.SequenceMatcher(
+                        None, old_txt, new_txt, autojunk=False).quick_ratio()
+                    if s >= threshold:
+                        # b2 == b1 for delete: the new-file position before
+                        # the blank-equal region, so new range is [b2, nb2].
+                        out.append(('replace', a1, gap_a, b2, nb2))
+                        i = k + 1
+                        continue
+        out.append(ops[i])
+        i += 1
+    return out
+
+
+def _line_sim(a, b):
+    """
+    Jaccard similarity on word token sets (alphanumeric, length >= 2).
+    Avoids false-positive matches from shared LaTeX command characters:
+    'IEEEauthorrefmark' shares zero WORDS with 'BLIND SUBMISSION', giving
+    sim=0, even though their character-level overlap is high. Falls back
+    to character quick_ratio for pure-syntax lines where both sets are empty
+    (e.g. lone braces like '}' vs '%}').
+    """
+    wa = set(t for t in re.findall(r'[a-zA-Z0-9]+', a.lower()) if len(t) >= 2)
+    wb = set(t for t in re.findall(r'[a-zA-Z0-9]+', b.lower()) if len(t) >= 2)
+    if not wa and not wb:
+        return difflib.SequenceMatcher(None, a, b, autojunk=False).quick_ratio()
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+def pair_replace_block(ob, nb, threshold=0.25):
+    """
+    Sequence-alignment DP (Needleman-Wunsch style) to find the optimal
+    monotone line pairing within a replace block. Similarity is computed on
+    alphanumeric tokens to avoid false matches from shared LaTeX punctuation.
+    Blank lines score zero so the DP skips them rather than distorting matches.
+    """
+    n, m = len(ob), len(nb)
+    if n == 0:
+        return [(None, j) for j in range(m)]
+    if m == 0:
+        return [(i, None) for i in range(n)]
+
+    sim = [[0.0] * m for _ in range(n)]
+    for i in range(n):
+        for j in range(m):
+            if ob[i].strip() and nb[j].strip():
+                s = _line_sim(ob[i], nb[j])
+                sim[i][j] = s if s >= threshold else 0.0
+
+    NEG = -1e9
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    ch = [[0] * (m + 1) for _ in range(n + 1)]  # 0=match 1=skip_old 2=skip_new
+    for i in range(1, n + 1):
+        ch[i][0] = 1
+    for j in range(1, m + 1):
+        ch[0][j] = 2
+
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            s = sim[i - 1][j - 1]
+            mv = (dp[i - 1][j - 1] + s) if s > 0 else NEG
+            so, sn = dp[i - 1][j], dp[i][j - 1]
+            if mv >= so and mv >= sn:
+                dp[i][j], ch[i][j] = mv, 0
+            elif so >= sn:
+                dp[i][j], ch[i][j] = so, 1
+            else:
+                dp[i][j], ch[i][j] = sn, 2
+
+    rows, i, j = [], n, m
+    while i > 0 or j > 0:
+        c = ch[i][j]
+        if c == 0:
+            rows.append((i - 1, j - 1)); i -= 1; j -= 1
+        elif c == 1:
+            rows.append((i - 1, None)); i -= 1
+        else:
+            rows.append((None, j - 1)); j -= 1
+    rows.reverse()
+    return _rebalance_pairs(rows, ob, nb)
+
+
+def _rebalance_pairs(pairs, ob, nb):
+    """
+    Re-pair adjacent unmatched deletes and inserts positionally, but only
+    when the positional pairs share at least some word overlap (Jaccard >= 0.1).
+    When the block contains completely unrelated content (e.g. a deleted prose
+    paragraph next to an added section header), show all dels first then all
+    ins rather than creating misleading side-by-side pairings.
+    """
+    PAIR_THRESHOLD = 0.15
+    result, i = [], 0
+    while i < len(pairs):
+        old_k, new_k = pairs[i]
+        if old_k is not None and new_k is not None:
+            result.append((old_k, new_k))
+            i += 1
+        else:
+            dels, ins = [], []
+            while i < len(pairs) and (pairs[i][0] is None or pairs[i][1] is None):
+                dk, ik = pairs[i]
+                if dk is not None:
+                    dels.append(dk)
+                if ik is not None:
+                    ins.append(ik)
+                i += 1
+            n_check = min(len(dels), len(ins))
+            has_similar = any(
+                _line_sim(ob[dels[j]], nb[ins[j]]) >= PAIR_THRESHOLD
+                for j in range(n_check)
+            )
+            if has_similar:
+                for j in range(max(len(dels), len(ins))):
+                    result.append((dels[j] if j < len(dels) else None,
+                                   ins[j] if j < len(ins) else None))
+            else:
+                for d in dels:
+                    result.append((d, None))
+                for inn in ins:
+                    result.append((None, inn))
+    return result
+
+
+def intra_diff(old_str, new_str):
+    """
+    Return (old_html, new_html) with char-level change spans. Falls back to
+    plain escaped text when similarity is too low to produce useful highlights.
+    """
+    sm = difflib.SequenceMatcher(None, old_str, new_str, autojunk=False)
+    if sm.quick_ratio() < 0.3:
+        return _html.escape(old_str), _html.escape(new_str)
+    op, np_ = [], []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        oc, nc = _html.escape(old_str[i1:i2]), _html.escape(new_str[j1:j2])
+        if tag == "equal":
+            op.append(oc); np_.append(nc)
+        elif tag == "delete":
+            op.append(f'<mark class="dhi">{oc}</mark>')
+        elif tag == "insert":
+            np_.append(f'<mark class="ahi">{nc}</mark>')
+        else:
+            op.append(f'<mark class="dhi">{oc}</mark>')
+            np_.append(f'<mark class="ahi">{nc}</mark>')
+    return "".join(op), "".join(np_)
+
+
+def adjacent_to_replace(opcodes):
+    """Merge bare adjacent delete+insert opcode pairs into replace blocks."""
+    out, i, ops = [], 0, list(opcodes)
+    while i < len(ops):
+        if (i + 1 < len(ops)
+                and ops[i][0] == 'delete'
+                and ops[i + 1][0] == 'insert'):
+            out.append(('replace', ops[i][1], ops[i][2],
+                        ops[i + 1][3], ops[i + 1][4]))
+            i += 2
+        else:
+            out.append(ops[i])
+            i += 1
+    return out
+
+
+def render_rows(opcodes, old_lines, new_lines):
+    """Convert opcodes to a list of HTML table row strings."""
+    rows = []
+    ctx_grp = 0
+
+    def ctx_row(k, i1, j1, grp=None):
+        lo, ln = i1 + k + 1, j1 + k + 1
+        txt = _html.escape(old_lines[i1 + k].rstrip("\n"))
+        if grp:
+            return (f'<tr class="ctx ctx-hidden" data-grp="{grp}">'
+                    f'<td class="ln">{lo}</td><td class="code">&nbsp;{txt}</td>'
+                    f'<td class="ln">{ln}</td><td class="code">&nbsp;{txt}</td>'
+                    f'</tr>')
+        return (f'<tr class="ctx">'
+                f'<td class="ln">{lo}</td><td class="code">&nbsp;{txt}</td>'
+                f'<td class="ln">{ln}</td><td class="code">&nbsp;{txt}</td>'
+                f'</tr>')
+
+    for tag, i1, i2, j1, j2 in opcodes:
+
+        if tag == "equal":
+            n = i2 - i1
+            hidden = n - 2 * CONTEXT
+            if hidden < MIN_GAP:
+                for k in range(n):
+                    rows.append(ctx_row(k, i1, j1))
+            else:
+                ctx_grp += 1
+                grp = f'g{ctx_grp}'
+                for k in range(CONTEXT):
+                    rows.append(ctx_row(k, i1, j1))
+                rows.append(
+                    f'<tr class="ctx-gap" data-reveal="{grp}">'
+                    f'<td colspan="4"><button class="gap-btn" '
+                    f'onclick="revealCtx(\'{grp}\')">'
+                    f'&#8943; {hidden} unchanged line'
+                    f'{"s" if hidden != 1 else ""}'
+                    f'</button></td></tr>'
+                )
+                for k in range(CONTEXT, n - CONTEXT):
+                    rows.append(ctx_row(k, i1, j1, grp=grp))
+                for k in range(n - CONTEXT, n):
+                    rows.append(ctx_row(k, i1, j1))
+
+        elif tag == "replace":
+            ob, nb = old_lines[i1:i2], new_lines[j1:j2]
+            for old_k, new_k in pair_replace_block(ob, nb):
+                if old_k is not None and new_k is not None:
+                    ot, nt = intra_diff(
+                        ob[old_k].rstrip("\n"), nb[new_k].rstrip("\n"))
+                    lo, ln = i1 + old_k + 1, j1 + new_k + 1
+                    lc = (f'<td class="ln del">{lo}</td>'
+                          f'<td class="code del">'
+                          f'<span class="badge dbadge">-</span>{ot}</td>')
+                    rc = (f'<td class="ln add">{ln}</td>'
+                          f'<td class="code add">'
+                          f'<span class="badge abadge">+</span>{nt}</td>')
+                elif old_k is not None:
+                    lo = i1 + old_k + 1
+                    ot = _html.escape(ob[old_k].rstrip("\n"))
+                    lc = (f'<td class="ln del">{lo}</td>'
+                          f'<td class="code del">'
+                          f'<span class="badge dbadge">-</span>{ot}</td>')
+                    rc = '<td class="ln"></td><td class="code"></td>'
+                else:
+                    ln = j1 + new_k + 1
+                    nt = _html.escape(nb[new_k].rstrip("\n"))
+                    lc = '<td class="ln"></td><td class="code"></td>'
+                    rc = (f'<td class="ln add">{ln}</td>'
+                          f'<td class="code add">'
+                          f'<span class="badge abadge">+</span>{nt}</td>')
+                rows.append(f'<tr>{lc}{rc}</tr>')
+
+        elif tag == "delete":
+            for k in range(i2 - i1):
+                lo = i1 + k + 1
+                ot = _html.escape(old_lines[i1 + k].rstrip("\n"))
+                rows.append(
+                    f'<tr>'
+                    f'<td class="ln del">{lo}</td>'
+                    f'<td class="code del">'
+                    f'<span class="badge dbadge">-</span>{ot}</td>'
+                    f'<td class="ln"></td><td class="code"></td>'
+                    f'</tr>'
+                )
+
+        elif tag == "insert":
+            for k in range(j2 - j1):
+                ln = j1 + k + 1
+                nt = _html.escape(new_lines[j1 + k].rstrip("\n"))
+                rows.append(
+                    f'<tr>'
+                    f'<td class="ln"></td><td class="code"></td>'
+                    f'<td class="ln add">{ln}</td>'
+                    f'<td class="code add">'
+                    f'<span class="badge abadge">+</span>{nt}</td>'
+                    f'</tr>'
+                )
+
+    return rows
+
+
+def build_html(old_lines, new_lines, old_name, new_name):
+    opcodes = patience_diff(old_lines, new_lines)
+    opcodes = merge_split_paragraphs(opcodes, old_lines, new_lines)
+    opcodes = adjacent_to_replace(opcodes)
+
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "insert":    added   += j2 - j1
+        elif tag == "delete":  removed += i2 - i1
+        elif tag == "replace": removed += i2 - i1; added += j2 - j1
+
+    rows    = render_rows(opcodes, old_lines, new_lines)
+    old_esc = _html.escape(old_name)
+    new_esc = _html.escape(new_name)
+    no_diff = ('<p class="identical">No differences found.</p>'
+               if added == 0 and removed == 0 else "")
+    del_s   = "s" if removed != 1 else ""
+    add_s   = "s" if added   != 1 else ""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>diff: {_html.escape(os.path.basename(old_name))} vs {_html.escape(os.path.basename(new_name))}</title>
+<style>
+:root {{
+  --del-bg:  #FFF3E0; --del-acc: #C84B00; --del-ln: #FFE0B2;
+  --add-bg:  #E3F2FD; --add-acc: #1457A8; --add-ln: #BBDEFB;
+  --ctx-bg:  #FFFFFF; --ctx-ln:  #F5F5F5; --border: #E0E0E0;
+  --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #F7F8FA; color: #1A1A1A;
+  padding: 28px 20px; max-width: 1600px; margin: 0 auto;
+}}
+h1 {{ font-size: 1.1rem; font-weight: 700; margin-bottom: 5px; }}
+.sub {{ font-size: 0.82rem; color: #666; margin-bottom: 16px; word-break: break-all; font-family: var(--mono); }}
+.toolbar {{ display: flex; align-items: center; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }}
+.stats {{ display: flex; gap: 8px; flex-wrap: wrap; margin-right: 4px; }}
+.stat {{ display: flex; align-items: center; gap: 5px; padding: 5px 12px; border-radius: 5px; font-size: 0.82rem; font-weight: 700; border: 1px solid; }}
+.sdel {{ background: var(--del-bg); color: var(--del-acc); border-color: #FFCC80; }}
+.sadd {{ background: var(--add-bg); color: var(--add-acc); border-color: #90CAF9; }}
+.btn {{ padding: 5px 12px; border-radius: 5px; border: 1px solid #CCC; background: #FFF; color: #555; font-size: 0.82rem; font-weight: 600; cursor: pointer; font-family: inherit; transition: background .1s; }}
+.btn:hover {{ background: #F0F0F0; }}
+.identical {{ padding: 14px 18px; background: #F0F0F0; border-radius: 6px; color: #555; font-size: 0.88rem; margin-bottom: 16px; }}
+.wrap {{ overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.07); }}
+table {{ border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 0.79rem; line-height: 1.55; table-layout: fixed; }}
+col.cl {{ width: 46px; }} col.cc {{ width: calc(50% - 46px); }}
+td {{ padding: 1px 8px; white-space: pre; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }}
+td.ln {{ text-align: right; padding: 1px 10px; color: #C0C0C0; background: var(--ctx-ln); border-right: 1px solid var(--border); user-select: none; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }}
+td.code {{ background: var(--ctx-bg); }}
+.badge {{ display: inline-block; width: 13px; text-align: center; font-weight: 800; user-select: none; margin-right: 3px; }}
+.dbadge {{ color: var(--del-acc); }} .abadge {{ color: var(--add-acc); }}
+mark.dhi {{ background: #FFBE40; color: inherit; border-radius: 2px; padding: 0 1px; }}
+mark.ahi {{ background: #42A5F5; color: inherit; border-radius: 2px; padding: 0 1px; }}
+.del {{ background: var(--del-bg) !important; }} .add {{ background: var(--add-bg) !important; }}
+td.ln.del {{ background: var(--del-ln) !important; color: var(--del-acc); border-right-color: var(--del-acc); }}
+td.ln.add {{ background: var(--add-ln) !important; color: var(--add-acc); border-right-color: var(--add-acc); }}
+tr.ctx td.code {{ color: #888; }}
+tr:hover td.code {{ filter: brightness(.96); }}
+thead th {{ background: #ECECEC; font-weight: 700; text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); font-family: inherit; font-size: 0.78rem; color: #444; position: sticky; top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+thead th.th-ln {{ font-family: var(--mono); text-align: right; padding-right: 10px; color: #AAA; font-weight: 400; }}
+.ctx-hidden {{ display: none; }}
+.ctx-gap td {{ padding: 0; background: #F5F5F5; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }}
+.gap-btn {{ width: 100%; padding: 5px 16px; background: none; border: none; color: #AAA; font-size: 0.74rem; cursor: pointer; text-align: left; font-family: var(--mono); letter-spacing: .04em; }}
+.gap-btn:hover {{ color: #555; background: #EBEBEB; }}
+body.wrapped td.code {{ white-space: pre-wrap; word-break: break-all; overflow: visible; text-overflow: clip; }}
+</style>
+</head>
+<body>
+<h1>File Diff</h1>
+<p class="sub">{old_esc} &rarr; {new_esc}</p>
+<div class="toolbar">
+  <div class="stats">
+    <div class="stat sdel">- {removed} line{del_s} removed</div>
+    <div class="stat sadd">+ {added} line{add_s} added</div>
+  </div>
+  <button class="btn" id="wrapBtn" onclick="toggleWrap()">Wrap lines</button>
+</div>
+{no_diff}
+<div class="wrap">
+<table>
+  <colgroup><col class="cl"><col class="cc"><col class="cl"><col class="cc"></colgroup>
+  <thead>
+    <tr>
+      <th class="th-ln">#</th><th>{_html.escape(os.path.basename(old_name))}</th>
+      <th class="th-ln">#</th><th>{_html.escape(os.path.basename(new_name))}</th>
+    </tr>
+  </thead>
+  <tbody>
+{"".join(rows)}
+  </tbody>
+</table>
+</div>
+<script>
+function revealCtx(grp) {{
+  document.querySelectorAll('[data-grp="' + grp + '"]').forEach(function(r) {{
+    r.classList.remove('ctx-hidden');
+  }});
+  var gap = document.querySelector('[data-reveal="' + grp + '"]');
+  if (gap) gap.remove();
+}}
+function toggleWrap() {{
+  var on = document.body.classList.toggle('wrapped');
+  document.getElementById('wrapBtn').textContent = on ? 'Clip lines' : 'Wrap lines';
+}}
+</script>
+</body>
+</html>"""
+
+
+def print_terminal_diff(old_lines, new_lines, old_name, new_name):
+    ADD  = "\033[32m" if _C else ""
+    DEL  = "\033[31m" if _C else ""
+    HUNK = "\033[36m" if _C else ""
+    DIM  = "\033[90m" if _C else ""
+    RST  = "\033[0m"  if _C else ""
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines, fromfile=old_name, tofile=new_name, lineterm=""))
+    if not diff:
+        info("Files are identical.")
+        return
+    for line in diff:
+        if line.startswith(("---", "+++")):  print(f"{HUNK}{line}{RST}")
+        elif line.startswith("@@"):           print(f"{HUNK}{line}{RST}")
+        elif line.startswith("+"):            print(f"{ADD}{line}{RST}")
+        elif line.startswith("-"):            print(f"{DEL}{line}{RST}")
+        else:                                 print(f"{DIM}{line}{RST}")
+
+
+def main():
+    section("Diff")
+
+    args = sys.argv[1:]
+    html_mode = "--html" in args
+    args = [a for a in args if a != "--html"]
+
+    if len(args) != 2:
+        print("Usage: diff <old_file> <new_file> [--html]")
+        print()
+        sys.exit(1)
+
+    old_path, new_path = args[0], args[1]
+
+    for path in (old_path, new_path):
+        if not os.path.isfile(path):
+            err(f"File not found: {path}")
+            print()
+            sys.exit(1)
+
+    info(f"Reading {old_path}")
+    old_lines = read_file(old_path)
+    info(f"Reading {new_path}")
+    new_lines = read_file(new_path)
+
+    if html_mode:
+        info("Building HTML diff...")
+        page = build_html(old_lines, new_lines, old_path, new_path)
+        out = "diff_output.html"
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(page)
+        ok(f"Saved to {out}")
+    else:
+        print_terminal_diff(old_lines, new_lines, old_path, new_path)
+
+    print()
+
+
+if __name__ == "__main__":
+    main()
