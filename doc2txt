@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-doc2txt: Convert an EPUB or PDF file to plain text using the best available tool.
-Usage: doc2txt <file.epub | file.pdf>
+doc2txt: Convert an EPUB, MOBI, or PDF file to plain text using the best available tool.
+Usage: doc2txt <file.epub | file.mobi | file.pdf>
 """
 
 import sys
@@ -10,6 +10,7 @@ import subprocess
 import zipfile
 import re
 import zlib
+import struct
 
 # -- fmt ---------------------------------------------------------------------
 import os as _os; _e = _os.environ
@@ -61,6 +62,21 @@ def try_pdftotext(input_path, txt_path):
             stdout=subprocess.DEVNULL
         )
         ok(f"Used 'pdftotext' -> {txt_path}")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def try_ebookconvert(input_path, txt_path):
+    """Attempt conversion using Calibre's ebook-convert (best for MOBI)."""
+    try:
+        subprocess.run(
+            ["ebook-convert", input_path, txt_path],
+            check=True,
+            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL
+        )
+        ok(f"Used 'ebook-convert' -> {txt_path}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -122,6 +138,81 @@ def epub_python_fallback(epub_path, txt_path):
         return True
     except Exception as e:
         warn(f"EPUB Python fallback failed: {e}")
+        return False
+
+
+def palmdoc_decompress(data):
+    """Reverse the PalmDOC LZ77-style compression used by MOBI records."""
+    out = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        c = data[i]
+        i += 1
+        if c <= 0x08:
+            out.extend(data[i:i + c])
+            i += c
+        elif c <= 0x7f:
+            out.append(c)
+        elif c >= 0xc0:
+            out.append(0x20)
+            out.append(c ^ 0x80)
+        else:
+            if i >= n:
+                break
+            c2 = data[i]
+            i += 1
+            m = (c << 8) | c2
+            distance = (m >> 3) & 0x7ff
+            length = (m & 0x07) + 3
+            start = len(out) - distance
+            if start < 0:
+                break
+            for j in range(length):
+                out.append(out[start + j])
+    return bytes(out)
+
+
+def mobi_python_fallback(mobi_path, txt_path):
+    """
+    Extract text from MOBI using only the Python standard library.
+    Parses the PalmDB record table and reverses PalmDOC compression.
+    Older HUFF/CDIC-compressed books are not supported by this fallback.
+    """
+    try:
+        with open(mobi_path, 'rb') as f:
+            data = f.read()
+
+        num_records = struct.unpack('>H', data[76:78])[0]
+        offsets = [struct.unpack('>I', data[78 + i * 8:82 + i * 8])[0] for i in range(num_records)]
+        offsets.append(len(data))
+
+        record0 = data[offsets[0]:offsets[1]]
+        compression = struct.unpack('>H', record0[0:2])[0]
+        text_record_count = struct.unpack('>H', record0[8:10])[0]
+
+        if compression == 17480:
+            warn("MOBI uses HUFF/CDIC compression, not supported by pure Python fallback")
+            return False
+
+        raw = bytearray()
+        for i in range(1, text_record_count + 1):
+            chunk = data[offsets[i]:offsets[i + 1]]
+            if compression == 2:
+                chunk = palmdoc_decompress(chunk)
+            raw.extend(chunk)
+
+        html = raw.decode('utf-8', errors='ignore')
+        text = re.sub(r'<[^>]+>', '', html)
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+
+        with open(txt_path, 'w', encoding='utf-8') as out:
+            out.write(text.strip())
+
+        ok(f"Used 'Pure Python MOBI fallback' -> {txt_path}")
+        return True
+    except Exception as e:
+        warn(f"MOBI Python fallback failed: {e}")
         return False
 
 
@@ -190,6 +281,13 @@ def convert_file(input_path):
         warn("pandoc not available, using built-in EPUB parser  (install: apt install pandoc / brew install pandoc)")
         epub_python_fallback(input_path, txt_path)
 
+    elif ext == ".mobi":
+        if try_ebookconvert(input_path, txt_path):
+            print()
+            return
+        warn("ebook-convert not available, using built-in MOBI parser  (install: https://calibre-ebook.com/download)")
+        mobi_python_fallback(input_path, txt_path)
+
     elif ext == ".pdf":
         if try_mutool(input_path, txt_path):
             print()
@@ -216,7 +314,7 @@ def convert_file(input_path):
 def main():
     if len(sys.argv) < 2:
         section("Document to TXT Converter")
-        print("Usage: doc2txt <file.epub | file.pdf>")
+        print("Usage: doc2txt <file.epub | file.mobi | file.pdf>")
         print()
         sys.exit(1)
     convert_file(sys.argv[1])
