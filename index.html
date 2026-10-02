@@ -50,10 +50,14 @@ SCRIPTS = {
         "url": BASE_URL + "thermal"
     },
     "largest": {
-        "description": "Show largest files in a directory (recursively)",
-        "usage": "largest [path] [limit]",
+        "description": "Show largest files (or directories) in a directory (recursively)",
+        "usage": "largest [--dirs] [path] [limit]",
         "url": BASE_URL + "largest",
         "args": [
+            {
+                "name": "--dirs",
+                "description": "Optional: List largest directories (total size of contents) instead of files"
+            },
             {
                 "name": "path",
                 "description": "Optional: Directory to scan (default: current directory)"

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Largest: List the N largest files under a directory tree.
-Usage: largest [path] [limit]
+Largest: List the N largest files (or directories) under a directory tree.
+Usage: largest [--dirs] [path] [limit]
 """
 
 import os
 import sys
+import stat
+import time
+import heapq
 
 # -- fmt ---------------------------------------------------------------------
 import os as _os; _e = _os.environ
@@ -24,61 +27,134 @@ def human_readable(size):
         size /= 1024
     return f"{size:.1f}P"
 
+def usage():
+    section("Largest Files")
+    print("Usage: largest [--dirs] [path] [limit]")
+    print("  --dirs   list the largest directories (total size of their contents) instead of files")
+    print()
+    sys.exit(1)
+
 def parse_args():
-    path = "."
+    args = sys.argv[1:]
+    dirs_mode = "--dirs" in args
+    args = [a for a in args if a != "--dirs"]
+    if len(args) > 2 or any(a.startswith("-") and not os.path.exists(a) for a in args):
+        usage()
+
+    path = args[0] if len(args) >= 1 else "."
     limit = 10
 
-    if len(sys.argv) >= 2:
-        path = sys.argv[1]
-
-    if len(sys.argv) >= 3:
+    if len(args) >= 2:
         try:
-            limit = int(sys.argv[2])
+            limit = int(args[1])
+            if limit < 1:
+                raise ValueError
         except ValueError:
-            err(f"Invalid number for limit: {sys.argv[2]}")
+            err(f"Invalid number for limit: {args[1]}")
             print()
             sys.exit(1)
 
-    return path, limit
+    return path, limit, dirs_mode
 
-def collect_files(root):
-    files = []
-    last_len = 0
+class Progress:
+    """Single-line 'Scanning: ...' status on stderr, only when it is a terminal."""
+    def __init__(self):
+        self.enabled = sys.stderr.isatty()
+        self.last_len = 0
+        self.last_time = 0.0
 
-    for dirpath, _, filenames in os.walk(root):
+    def update(self, dirpath):
+        now = time.monotonic()
+        if not self.enabled or now - self.last_time < 0.1:
+            return
+        self.last_time = now
         label = f"[*] Scanning: {dirpath}"[:75]
         colored = ("\033[90m[*]\033[0m" + label[3:]) if _C else label
-        print("\r" + colored + " " * max(0, last_len - len(label)), end="", flush=True)
-        last_len = len(label)
+        sys.stderr.write("\r" + colored + " " * max(0, self.last_len - len(label)))
+        sys.stderr.flush()
+        self.last_len = len(label)
+
+    def clear(self):
+        if self.enabled:
+            sys.stderr.write("\r" + " " * self.last_len + "\r")
+            sys.stderr.flush()
+
+def scan(root, limit, dirs_mode):
+    """
+    Walk root without following symlinks; count each hard-linked file once.
+    Returns (top [(size, path)], file_count, total_bytes, unreadable_dirs).
+    """
+    top = []                 # min-heap of the `limit` largest entries
+    seen_inodes = set()      # (dev, ino) of files with several hard links
+    dir_totals = {}          # dirs mode: finished subdirectory totals
+    file_count = total = 0
+    unreadable = [0]
+    progress = Progress()
+
+    def keep(size, path):
+        if len(top) < limit:
+            heapq.heappush(top, (size, path))
+        elif size > top[0][0]:
+            heapq.heappushpop(top, (size, path))
+
+    def on_error(_):
+        unreadable[0] += 1
+
+    # Bottom-up in dirs mode so every subdirectory total is known before its parent
+    for dirpath, dirnames, filenames in os.walk(root, topdown=not dirs_mode, onerror=on_error):
+        progress.update(dirpath)
+        dir_size = 0
 
         for name in filenames:
             full_path = os.path.join(dirpath, name)
             try:
-                size = os.path.getsize(full_path)
-                files.append((size, full_path))
-            except Exception:
+                st = os.lstat(full_path)
+            except OSError:
                 continue
+            if not stat.S_ISREG(st.st_mode):   # symlinks, sockets, devices...
+                continue
+            if st.st_nlink > 1:
+                key = (st.st_dev, st.st_ino)
+                if key in seen_inodes:
+                    continue
+                seen_inodes.add(key)
 
-    print("\r" + " " * last_len + "\r", end="", flush=True)
-    return files
+            file_count += 1
+            total += st.st_size
+            dir_size += st.st_size
+            if not dirs_mode:
+                keep(st.st_size, full_path)
+
+        if dirs_mode:
+            for d in dirnames:
+                dir_size += dir_totals.pop(os.path.join(dirpath, d), 0)
+            dir_totals[dirpath] = dir_size
+            if dirpath != root:
+                keep(dir_size, dirpath)
+
+    progress.clear()
+    return sorted(top, reverse=True), file_count, total, unreadable[0]
 
 def main():
-    root, limit = parse_args()
+    root, limit, dirs_mode = parse_args()
 
-    section(f"Largest Files in '{root}'")
+    kind = "Directories" if dirs_mode else "Files"
+    section(f"Largest {kind} in '{root}'")
 
     if not os.path.exists(root):
         err(f"Path does not exist: {root}")
         print()
         sys.exit(1)
 
-    files = collect_files(root)
-    files.sort(key=lambda x: x[0], reverse=True)
+    top, file_count, total, unreadable = scan(root, limit, dirs_mode)
 
-    top = files[:limit]
+    info(f"Scanned {file_count:,} files ({human_readable(total)} total)")
+    if unreadable:
+        warn(f"Skipped {unreadable:,} unreadable director{'y' if unreadable == 1 else 'ies'}")
+    print()
 
     if not top:
-        print("No files found.")
+        print("No files found." if not dirs_mode else "No subdirectories found.")
     else:
         for size, path in top:
             print(f"{human_readable(size):>8}  {path}")
