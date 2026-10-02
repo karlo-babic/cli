@@ -175,16 +175,23 @@ def read_file(filepath, max_lines):
         return ""
 
 def share_command(session_id, auth, cmd, interval):
+    # Rolling window of the current run's output (like tail). Each push sends
+    # the whole window, so long-running commands keep their recent history and
+    # slow commands are never split across pushes. Reset on each relaunch.
     lines = collections.deque(maxlen=500)
+    changed = [False]
     lock = threading.Lock()
 
     def reader(proc, done_event):
         for line in proc.stdout:
             with lock:
                 lines.append(strip_ansi(line))
+                changed[0] = True
         done_event.set()
 
     def launch():
+        with lock:
+            lines.clear()
         done = threading.Event()
         proc = subprocess.Popen(
             cmd, shell=True,
@@ -202,8 +209,8 @@ def share_command(session_id, auth, cmd, interval):
         while True:
             proc_exited = done.wait(timeout=interval)
             with lock:
-                text = "".join(lines)
-                lines.clear()
+                text = "".join(lines) if changed[0] else ""
+                changed[0] = False
             if text.strip():
                 push_data(session_id, auth, text, cmd)
                 info("Pushed update")
