@@ -204,10 +204,9 @@ def share_command(session_id, auth, cmd, interval):
             with lock:
                 text = "".join(lines)
                 lines.clear()
-            if not text.strip():
-                continue
-            push_data(session_id, auth, text, cmd)
-            info("Pushed update")
+            if text.strip():
+                push_data(session_id, auth, text, cmd)
+                info("Pushed update")
             if proc_exited:
                 time.sleep(interval)
                 proc, done = launch()

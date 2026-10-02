@@ -22,6 +22,7 @@ def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
 
 CONTEXT = 3   # unchanged lines to show on each side of a changed block
 MIN_GAP = 4   # only collapse if >= this many lines would be hidden
+MAX_DP_CELLS = 1_000_000  # above this, line-alignment DP is too slow/large; use difflib
 
 
 def read_file(path):
@@ -79,6 +80,12 @@ def patience_diff(old_lines, new_lines):
             return
         if m == 0:
             result.append(("delete", a0, a1, b0, b0))
+            return
+
+        if n * m > MAX_DP_CELLS:
+            sm = difflib.SequenceMatcher(None, ob, nb, autojunk=False)
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                result.append((tag, a0 + i1, a0 + i2, b0 + j1, b0 + j2))
             return
 
         THRESHOLD = 0.25
@@ -243,6 +250,9 @@ def pair_replace_block(ob, nb, threshold=0.25):
         return [(None, j) for j in range(m)]
     if m == 0:
         return [(i, None) for i in range(n)]
+    if n * m > MAX_DP_CELLS:
+        return _rebalance_pairs(
+            [(i, None) for i in range(n)] + [(None, j) for j in range(m)], ob, nb)
 
     sim = [[0.0] * m for _ in range(n)]
     for i in range(n):

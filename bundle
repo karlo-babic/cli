@@ -78,7 +78,7 @@ def clone_repository(url, dest_dir):
         sys.exit(1)
 
 
-def collect_files(root_dir, allowed_extensions):
+def collect_files(root_dir, allowed_extensions, exclude_path=None):
     file_paths = []
 
     for dirpath, dirnames, filenames in os.walk(root_dir):
@@ -87,6 +87,10 @@ def collect_files(root_dir, allowed_extensions):
 
         for filename in filenames:
             full_path = os.path.join(dirpath, filename)
+
+            # Never bundle the output file into itself (e.g. on a re-run)
+            if exclude_path and os.path.abspath(full_path) == exclude_path:
+                continue
 
             # Skip if extension not allowed or file is binary
             if not is_valid_file(full_path, allowed_extensions) or is_binary(full_path):
@@ -205,7 +209,7 @@ def main():
         else:
             info("No extension list provided. Using default exclusion list.")
 
-        files = collect_files(root_dir, allowed_extensions)
+        files = collect_files(root_dir, allowed_extensions, os.path.abspath(output_file))
         write_output(source_name, files, output_file)
 
         ok(f"Done. Exported {len(files)} files to {output_file}")

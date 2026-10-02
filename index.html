@@ -199,12 +199,17 @@ def run_script(name, args=None):
     args = args or []
     script_url = SCRIPTS[name]["url"]
 
-    # Download the script to a temporary file
-    with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".py", encoding="utf-8") as tmp:
+    # Download the script to a temporary file. The file is closed before the
+    # child runs so it can be removed afterwards (Windows can't delete open files).
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".py", encoding="utf-8") as tmp:
+        tmp_path = tmp.name
+
+    try:
         try:
             with urllib.request.urlopen(script_url) as response:
-                tmp.write(response.read().decode())
-            tmp.flush()
+                code = response.read().decode()
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(code)
         except Exception as e:
             err(f"Failed to fetch script: {e}")
             print()
@@ -216,8 +221,9 @@ def run_script(name, args=None):
             err("No Python interpreter found")
             print()
             return
-        cmd = [python_cmd, tmp.name] + args
-        
+        cmd = [python_cmd, tmp_path] + args
+
+        p = None
         try:
             # Use Popen instead of run() so we can manage the interrupt signal
             p = subprocess.Popen(cmd)
@@ -225,20 +231,21 @@ def run_script(name, args=None):
         except KeyboardInterrupt:
             # The user pressed Ctrl+C. The child script also received this signal.
             # We must wait a few seconds for the child to finish its cleanup routine.
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                p.terminate() # Force kill if it hangs longer than 5 seconds
+            if p is not None:
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.terminate() # Force kill if it hangs longer than 5 seconds
             print()
         except Exception as e:
             err(f"Execution failed: {e}")
             print()
-        finally:
-            # Clean up the downloaded temporary file so they don't pile up
-            try:
-                os.remove(tmp.name)
-            except Exception:
-                pass
+    finally:
+        # Clean up the downloaded temporary file so they don't pile up
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
 def print_help():
     print(f"\n{CYAN}Available Scripts:{RESET}")
@@ -295,8 +302,16 @@ def main():
                 print("\nExiting.\n")
                 break
 
-            if inp.lower().startswith("help"):
+            try:
                 parts = shlex.split(inp)
+            except ValueError as e:
+                err(f"Could not parse input: {e}")
+                print()
+                continue
+            if not parts:
+                continue
+
+            if parts[0].lower() == "help":
                 if len(parts) == 1:
                     print_help()
                 else:
@@ -316,10 +331,6 @@ def main():
                             for arg in args:
                                 print(f"  {GREEN}{arg.get('name',''):<15}{RESET} : {arg.get('description','')}")
                         print()
-                continue
-
-            parts = shlex.split(inp)
-            if not parts:
                 continue
 
             script_name, *script_args = parts

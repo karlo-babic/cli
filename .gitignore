@@ -1,0 +1,10 @@
+# Editors / tools
+.vscode/
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+
+# Script output when testing in the repo
+diff_output.html
