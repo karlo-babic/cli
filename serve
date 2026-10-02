@@ -65,6 +65,13 @@ def usage():
     print(f"  port       port to listen on (default: {DEFAULT_PORT}; the next free one is used if busy)")
     print("  --upload   also allow uploading files into the shared folder")
     print()
+    print("On the other PC, open one of the printed http:// addresses in a browser")
+    print("  or: curl -O http://<ip>:<port>/file   /   wget -r -np -nH http://<ip>:<port>/")
+    print("Both PCs must be on the same network (guest/campus Wi-Fi may block this)")
+    print("Firewall: Linux (ufw): sudo ufw allow <port>/tcp  (undo: sudo ufw delete allow <port>/tcp)")
+    print("          Windows/macOS: allow Python when asked")
+    print("A folder containing index.html is served as a website instead of a file listing")
+    print()
     sys.exit(1)
 
 def parse_args():
