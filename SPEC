@@ -92,6 +92,10 @@ Fatal error pattern
 
 Always print() before sys.exit so the terminal prompt appears on its own line.
 
+Exit with 0 on success and 1 on any error (including wrong usage). The
+launcher passes the script's exit code through, so scripts can be used in
+shell conditionals.
+
 
 Encoding
 --------
@@ -134,8 +138,10 @@ Adding a new script
 2. Add an entry to the SCRIPTS dict in index.html:
 
        "scriptname": {
-           "description": "One sentence, same style as the others.",
+           "description": "Short phrase, same style as the others",
+           "usage": "scriptname <arg1> [arg2]",
            "url": BASE_URL + "scriptname",
+           "hidden": True,                    # optional: omit from the help list
            "args": [                          # omit key if no args
                {
                    "name": "argname",
@@ -143,3 +149,7 @@ Adding a new script
                }
            ]
        }
+
+   "usage" must match the Usage line in the script's docstring exactly.
+   "description" is a short phrase without a trailing period. Optional
+   arguments start their description with "Optional: ".
