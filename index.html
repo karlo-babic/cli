@@ -23,6 +23,7 @@ def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===
 def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
 def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
 def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
 # -----------------------------------------------------------------------------
 
 BASE_URL = "https://karlo.observer/cli/"
@@ -188,6 +189,10 @@ else:
     RED = GREEN = YELLOW = BLUE = CYAN = RESET = ""
 
 def get_python_cmd():
+    # Prefer the interpreter running this launcher, so scripts get the same version
+    if sys.executable:
+        return sys.executable
+
     candidates = ["python3", "python"]
     if os.name == "nt":
         candidates.insert(0, "py")
@@ -199,10 +204,11 @@ def get_python_cmd():
     return None
 
 def run_script(name, args=None):
+    """Download and run a script. Returns its exit code (1 on launcher errors)."""
     if name not in SCRIPTS:
         err(f"Unknown script: {name}")
         print()
-        return
+        return 1
 
     args = args or []
     script_url = SCRIPTS[name]["url"]
@@ -221,21 +227,21 @@ def run_script(name, args=None):
         except Exception as e:
             err(f"Failed to fetch script: {e}")
             print()
-            return
+            return 1
 
         # Execute the downloaded script with forwarded arguments
         python_cmd = get_python_cmd()
         if not python_cmd:
             err("No Python interpreter found")
             print()
-            return
+            return 1
         cmd = [python_cmd, tmp_path] + args
 
         p = None
         try:
             # Use Popen instead of run() so we can manage the interrupt signal
             p = subprocess.Popen(cmd)
-            p.wait()
+            return p.wait()
         except KeyboardInterrupt:
             # The user pressed Ctrl+C. The child script also received this signal.
             # We must wait a few seconds for the child to finish its cleanup routine.
@@ -245,9 +251,11 @@ def run_script(name, args=None):
                 except subprocess.TimeoutExpired:
                     p.terminate() # Force kill if it hangs longer than 5 seconds
             print()
+            return 130  # conventional exit code for Ctrl+C
         except Exception as e:
             err(f"Execution failed: {e}")
             print()
+            return 1
     finally:
         # Clean up the downloaded temporary file so they don't pile up
         try:
@@ -257,10 +265,10 @@ def run_script(name, args=None):
 
 def print_help():
     print(f"\n{CYAN}Available Scripts:{RESET}")
-    for name, info in SCRIPTS.items():
-        if info.get("hidden"):
-            continue
-        print(f"  {GREEN}{name:<8}{RESET} - {info.get('description','')}")
+    visible = {name: info for name, info in SCRIPTS.items() if not info.get("hidden")}
+    width = max(len(name) for name in visible)
+    for name, info in visible.items():
+        print(f"  {GREEN}{name:<{width}}{RESET} - {info.get('description','')}")
     print(f"\n{CYAN}Interactive Mode Usage:{RESET}")
     print("  Type a script name, 'help [script]', or 'exit'.")
     print(f"\n{CYAN}Direct Execution:{RESET}")
@@ -273,8 +281,7 @@ def main():
     if len(sys.argv) > 1:
         script_name = sys.argv[1]
         script_args = sys.argv[2:]
-        run_script(script_name, script_args)
-        return
+        sys.exit(run_script(script_name, script_args))
 
     top = "    \u2554" + "\u2550"*38 + "\u2557"
     mid = "    \u2551   Remote Python Script Environment   \u2551"
