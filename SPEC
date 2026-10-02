@@ -153,3 +153,7 @@ Adding a new script
    "usage" must match the Usage line in the script's docstring exactly.
    "description" is a short phrase without a trailing period. Optional
    arguments start their description with "Optional: ".
+
+3. Run the checker; it must pass before committing:
+
+       python3 _check.py

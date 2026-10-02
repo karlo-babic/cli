@@ -38,4 +38,5 @@ Each script is a standalone file and can be run directly:
 ## Adding a script
 
 See [SPEC](SPEC) for the required file layout, output conventions, and how to
-register a script in `index.html`.
+register a script in `index.html`. Run `python3 _check.py` to verify that all
+scripts follow it.
