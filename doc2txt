@@ -7,10 +7,16 @@ Usage: doc2txt <file.epub | file.mobi | file.pdf>
 import sys
 import os
 import subprocess
+import shutil
 import zipfile
 import re
 import zlib
 import struct
+import posixpath
+import importlib
+import urllib.parse
+import html as _html
+import xml.etree.ElementTree as ET
 
 # -- fmt ---------------------------------------------------------------------
 import os as _os; _e = _os.environ
@@ -22,99 +28,105 @@ def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
 def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
 # -----------------------------------------------------------------------------
 
-def try_mutool(input_path, txt_path):
-    """Attempt conversion using Artifex mutool."""
+INSTALL_HINTS = {
+    "mutool":        "apt install mupdf-tools / brew install mupdf",
+    "pandoc":        "apt install pandoc / brew install pandoc",
+    "pdftotext":     "apt install poppler-utils / brew install poppler",
+    "ebook-convert": "https://calibre-ebook.com/download",
+}
+
+
+def run_tool(name, cmd, txt_path):
+    """Run an external converter. Returns True on success."""
     try:
-        subprocess.run(
-            ["mutool", "convert", "-o", txt_path, input_path],
-            check=True,
-            stderr=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL
-        )
-        ok(f"Used 'mutool' -> {txt_path}")
+        subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        ok(f"Used '{name}' -> {txt_path}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
+
+
+def try_mutool(input_path, txt_path):
+    """Attempt conversion using Artifex mutool."""
+    return run_tool("mutool", ["mutool", "convert", "-o", txt_path, input_path], txt_path)
 
 
 def try_pandoc(input_path, txt_path):
     """Attempt conversion using pandoc (best for EPUB/HTML)."""
-    try:
-        subprocess.run(
-            ["pandoc", input_path, "-t", "plain", "-o", txt_path],
-            check=True,
-            stderr=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL
-        )
-        ok(f"Used 'pandoc' -> {txt_path}")
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+    return run_tool("pandoc", ["pandoc", input_path, "-t", "plain", "-o", txt_path], txt_path)
 
 
 def try_pdftotext(input_path, txt_path):
     """Attempt conversion using poppler's pdftotext."""
-    try:
-        subprocess.run(
-            ["pdftotext", input_path, txt_path],
-            check=True,
-            stderr=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL
-        )
-        ok(f"Used 'pdftotext' -> {txt_path}")
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+    return run_tool("pdftotext", ["pdftotext", input_path, txt_path], txt_path)
 
 
 def try_ebookconvert(input_path, txt_path):
     """Attempt conversion using Calibre's ebook-convert (best for MOBI)."""
-    try:
-        subprocess.run(
-            ["ebook-convert", input_path, txt_path],
-            check=True,
-            stderr=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL
-        )
-        ok(f"Used 'ebook-convert' -> {txt_path}")
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+    return run_tool("ebook-convert", ["ebook-convert", input_path, txt_path], txt_path)
 
 
 def try_python_pdf_libs(input_path, txt_path):
     """Attempt conversion using common third-party Python PDF libraries."""
-    # Attempt pypdf (modern)
-    try:
-        import pypdf
-        with open(input_path, 'rb') as f:
-            reader = pypdf.PdfReader(f)
-            text = [page.extract_text() or '' for page in reader.pages]
-        with open(txt_path, 'w', encoding='utf-8') as out:
-            out.write('\n\n'.join(text))
-        ok(f"Used 'pypdf' library -> {txt_path}")
-        return True
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # Attempt PyPDF2 (legacy but common)
-    try:
-        import PyPDF2
-        with open(input_path, 'rb') as f:
-            reader = PyPDF2.PdfReader(f)
-            text = [page.extract_text() or '' for page in reader.pages]
-        with open(txt_path, 'w', encoding='utf-8') as out:
-            out.write('\n\n'.join(text))
-        ok(f"Used 'PyPDF2' library -> {txt_path}")
-        return True
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
+    for mod_name in ("pypdf", "PyPDF2"):
+        try:
+            mod = importlib.import_module(mod_name)
+            with open(input_path, 'rb') as f:
+                reader = mod.PdfReader(f)
+                text = [page.extract_text() or '' for page in reader.pages]
+            with open(txt_path, 'w', encoding='utf-8') as out:
+                out.write('\n\n'.join(text))
+            ok(f"Used '{mod_name}' library -> {txt_path}")
+            return True
+        except ImportError:
+            continue
+        except Exception:
+            warn(f"'{mod_name}' failed on this file")
     return False
+
+
+BLOCK_TAGS = r'p|div|h[1-6]|li|tr|blockquote|section|article|title|dt|dd|table|ul|ol'
+
+
+def html_to_text(markup):
+    """Convert (X)HTML to plain text, keeping paragraph breaks."""
+    text = re.sub(r'<(head|style|script)\b.*?</\1\s*>', ' ', markup, flags=re.S | re.I)
+    text = re.sub(r'\s+', ' ', text)  # source newlines are just whitespace in HTML
+    text = re.sub(r'<br\b[^>]*>', '\n', text, flags=re.I)
+    text = re.sub(rf'</?(?:{BLOCK_TAGS})\b[^>]*>', '\n\n', text, flags=re.I)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = _html.unescape(text).replace('\u00a0', ' ')
+    text = '\n'.join(line.strip() for line in text.split('\n'))
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def epub_spine_order(zf):
+    """Return content document paths in reading order (OPF spine), or None."""
+    try:
+        container = ET.fromstring(zf.read('META-INF/container.xml'))
+        rootfile = next(el for el in container.iter() if el.tag.endswith('rootfile'))
+        opf_path = rootfile.get('full-path')
+        opf = ET.fromstring(zf.read(opf_path))
+        opf_dir = posixpath.dirname(opf_path)
+
+        manifest = {}
+        for el in opf.iter():
+            if el.tag.endswith('}item') or el.tag == 'item':
+                href = urllib.parse.unquote(el.get('href', ''))
+                manifest[el.get('id')] = posixpath.normpath(posixpath.join(opf_dir, href))
+
+        order = []
+        for el in opf.iter():
+            if el.tag.endswith('}itemref') or el.tag == 'itemref':
+                path = manifest.get(el.get('idref'))
+                if path and path not in order:
+                    order.append(path)
+        names = set(zf.namelist())
+        order = [p for p in order if p in names]
+        return order or None
+    except Exception:
+        return None
 
 
 def epub_python_fallback(epub_path, txt_path):
@@ -122,18 +134,17 @@ def epub_python_fallback(epub_path, txt_path):
     text_parts = []
     try:
         with zipfile.ZipFile(epub_path, 'r') as zf:
-            for name in zf.namelist():
-                if name.lower().endswith(('.xhtml', '.html', '.htm')):
-                    with zf.open(name) as f:
-                        content = f.read().decode('utf-8', errors='ignore')
-                        # Strip HTML tags crudely
-                        text = re.sub(r'<[^>]+>', '', content)
-                        text = re.sub(r'\n\s*\n', '\n\n', text)
-                        text_parts.append(text.strip())
-        
+            names = epub_spine_order(zf)
+            if names is None:
+                warn("Could not read EPUB reading order, chapters may be out of order")
+                names = [n for n in zf.namelist() if n.lower().endswith(('.xhtml', '.html', '.htm'))]
+            for name in names:
+                content = zf.read(name).decode('utf-8', errors='ignore')
+                text_parts.append(html_to_text(content))
+
         with open(txt_path, 'w', encoding='utf-8') as out:
             out.write('\n\n'.join(filter(None, text_parts)))
-            
+
         ok(f"Used 'Pure Python EPUB fallback' -> {txt_path}")
         return True
     except Exception as e:
@@ -173,6 +184,34 @@ def palmdoc_decompress(data):
     return bytes(out)
 
 
+def mobi_trailing_size(record, flags):
+    """
+    Number of trailing bytes appended to a MOBI text record (indexing and
+    multibyte data, signalled by the extra data flags). They must be cut off
+    before decompression or they show up as garbage at record boundaries.
+    """
+    def entry_size(size):
+        result, bitpos = 0, 0
+        while size > 0:
+            v = record[size - 1]
+            result |= (v & 0x7F) << bitpos
+            bitpos += 7
+            size -= 1
+            if (v & 0x80) or bitpos >= 28:
+                break
+        return result
+
+    num = 0
+    test = flags >> 1
+    while test:
+        if test & 1:
+            num += entry_size(len(record) - num)
+        test >>= 1
+    if flags & 1 and len(record) - num - 1 >= 0:
+        num += (record[len(record) - num - 1] & 0x3) + 1
+    return num
+
+
 def mobi_python_fallback(mobi_path, txt_path):
     """
     Extract text from MOBI using only the Python standard library.
@@ -195,19 +234,28 @@ def mobi_python_fallback(mobi_path, txt_path):
             warn("MOBI uses HUFF/CDIC compression, not supported by pure Python fallback")
             return False
 
+        # MOBI header (absent in plain PalmDOC files): text encoding and extra data flags
+        encoding, extra_flags = 'cp1252', 0
+        if record0[16:20] == b'MOBI':
+            header_len = struct.unpack('>I', record0[20:24])[0]
+            if struct.unpack('>I', record0[28:32])[0] == 65001:
+                encoding = 'utf-8'
+            if header_len >= 0xE4 and len(record0) >= 0xF4:
+                extra_flags = struct.unpack('>H', record0[0xF2:0xF4])[0]
+
         raw = bytearray()
         for i in range(1, text_record_count + 1):
             chunk = data[offsets[i]:offsets[i + 1]]
+            if extra_flags:
+                chunk = chunk[:len(chunk) - mobi_trailing_size(chunk, extra_flags)]
             if compression == 2:
                 chunk = palmdoc_decompress(chunk)
             raw.extend(chunk)
 
-        html = raw.decode('utf-8', errors='ignore')
-        text = re.sub(r'<[^>]+>', '', html)
-        text = re.sub(r'\n\s*\n', '\n\n', text)
+        text = html_to_text(raw.decode(encoding, errors='ignore'))
 
         with open(txt_path, 'w', encoding='utf-8') as out:
-            out.write(text.strip())
+            out.write(text)
 
         ok(f"Used 'Pure Python MOBI fallback' -> {txt_path}")
         return True
@@ -238,25 +286,48 @@ def pdf_python_fallback(pdf_path, txt_path):
                 for s in strings:
                     # Clean escaped characters common in PDF streams
                     s = s.replace(b'\\(', b'(').replace(b'\\)', b')').replace(b'\\\\', b'\\')
-                    
+
                     # PDF text is often latin-1 or MacRoman unless marked as UTF-16
                     text = s.decode('latin-1', errors='ignore')
                     if text.startswith('\xfe\xff'):
                         text = s[2:].decode('utf-16-be', errors='ignore')
-                        
+
                     text_parts.append(text)
             except zlib.error:
                 continue
 
+        if not text_parts:
+            warn("PDF Python fallback found no text (scanned or unusual PDF?)")
+            return False
+
         with open(txt_path, 'w', encoding='utf-8') as out:
             # Join with spaces since stream extraction fractures sentences
             out.write(' '.join(text_parts))
-        
+
         ok(f"Used 'Pure Python PDF fallback' -> {txt_path}")
         return True
     except Exception as e:
         warn(f"PDF Python fallback failed: {e}")
         return False
+
+
+# Strategies per extension, best first: (external tool name or None, function)
+STRATEGIES = {
+    ".epub": [("mutool", try_mutool), ("pandoc", try_pandoc), (None, epub_python_fallback)],
+    ".mobi": [("ebook-convert", try_ebookconvert), (None, mobi_python_fallback)],
+    ".pdf":  [("mutool", try_mutool), ("pdftotext", try_pdftotext),
+              (None, try_python_pdf_libs), (None, pdf_python_fallback)],
+}
+
+
+def unique_txt_path(input_path):
+    """book.epub -> book.txt, or 'book (1).txt' etc. if that already exists."""
+    base = os.path.splitext(input_path)[0]
+    path, n = base + ".txt", 1
+    while os.path.exists(path):
+        path = f"{base} ({n}).txt"
+        n += 1
+    return path
 
 
 def convert_file(input_path):
@@ -266,49 +337,32 @@ def convert_file(input_path):
         print()
         sys.exit(1)
 
-    info(f"Processing: {input_path}")
     ext = os.path.splitext(input_path)[1].lower()
-    txt_path = os.path.splitext(input_path)[0] + ".txt"
-
-    if ext == ".epub":
-        if try_mutool(input_path, txt_path):
-            print()
-            return
-        warn("mutool not available, trying pandoc  (install: apt install mupdf-tools / brew install mupdf)")
-        if try_pandoc(input_path, txt_path):
-            print()
-            return
-        warn("pandoc not available, using built-in EPUB parser  (install: apt install pandoc / brew install pandoc)")
-        epub_python_fallback(input_path, txt_path)
-
-    elif ext == ".mobi":
-        if try_ebookconvert(input_path, txt_path):
-            print()
-            return
-        warn("ebook-convert not available, using built-in MOBI parser  (install: https://calibre-ebook.com/download)")
-        mobi_python_fallback(input_path, txt_path)
-
-    elif ext == ".pdf":
-        if try_mutool(input_path, txt_path):
-            print()
-            return
-        warn("mutool not available, trying pdftotext  (install: apt install mupdf-tools / brew install mupdf)")
-        if try_pdftotext(input_path, txt_path):
-            print()
-            return
-        warn("pdftotext not available, trying Python libraries  (install: apt install poppler-utils / brew install poppler)")
-        if try_python_pdf_libs(input_path, txt_path):
-            print()
-            return
-        warn("no PDF library available, using basic fallback - output may be incomplete  (install: pip install pypdf)")
-        pdf_python_fallback(input_path, txt_path)
-        
-    else:
+    if ext not in STRATEGIES:
         err(f"Unsupported file extension: {ext}")
         print()
         sys.exit(1)
 
+    info(f"Processing: {input_path}")
+    txt_path = unique_txt_path(input_path)
+    if txt_path != os.path.splitext(input_path)[0] + ".txt":
+        warn(f"{os.path.splitext(input_path)[0]}.txt already exists, writing to {txt_path}")
+
+    for tool, fn in STRATEGIES[ext]:
+        if fn is pdf_python_fallback:
+            warn("Using basic built-in PDF parser - output may be incomplete  (better: pip install pypdf)")
+        if fn(input_path, txt_path):
+            print()
+            return
+        if tool:
+            if shutil.which(tool):
+                warn(f"'{tool}' failed on this file")
+            else:
+                warn(f"'{tool}' not installed  (install: {INSTALL_HINTS[tool]})")
+
+    err("All conversion methods failed")
     print()
+    sys.exit(1)
 
 
 def main():
