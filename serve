@@ -433,8 +433,13 @@ def main():
         warn("No LAN address found; only this machine can connect")
     print()
     warn("Anyone on this network can " + ("read and add files" if upload else "read these files"))
-    if platform.system() == "Windows":
-        info("Windows Firewall may ask whether to allow Python on this network")
+    system = platform.system()
+    if system == "Linux":
+        info(f"Firewall blocking it? sudo ufw allow {actual}/tcp  (undo: sudo ufw delete allow {actual}/tcp)")
+    elif system == "Windows":
+        info("Firewall: allow Python when asked (tick Private networks)")
+    elif system == "Darwin":
+        info("Firewall: allow Python when asked")
     info("Press Ctrl+C to stop")
     print()
 
