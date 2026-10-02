@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+"""
+Serve: Share a folder on the local network over HTTP, optionally accepting uploads.
+Usage: serve [--upload] [dir] [port]
+"""
+
+import io
+import os
+import re
+import sys
+import html
+import time
+import errno
+import socket
+import platform
+import threading
+import functools
+import urllib.parse
+import http.server
+
+# -- fmt ---------------------------------------------------------------------
+import os as _os; _e = _os.environ
+_C = "NO_COLOR" not in _e and bool(_e.get("FORCE_COLOR")=="1" or _e.get("WT_SESSION") or _e.get("ANSICON") or _e.get("TERM_PROGRAM") or _e.get("TERM","") not in ("","dumb"))
+def section(t): print(f"\n\033[36m=== {t} ===\033[0m" if _C else f"\n=== {t} ===")
+def info(m):    print(f"\033[90m[*]\033[0m {m}"       if _C else f"[*] {m}")
+def ok(m):      print(f"\033[32m[+]\033[0m {m}"       if _C else f"[+] {m}")
+def err(m):     print(f"\033[31m[-]\033[0m {m}"       if _C else f"[-] {m}")
+def warn(m):    print(f"\033[33m[!]\033[0m {m}"       if _C else f"[!] {m}")
+# -----------------------------------------------------------------------------
+
+DEFAULT_PORT = 8000
+PORT_TRIES = 20          # how many ports to try, starting at the requested one
+CHUNK = 64 * 1024
+MAX_PART_HEADERS = 16 * 1024
+BAD_NAME_CHARS = '<>:"|?*'   # not allowed in Windows file names; replaced everywhere
+
+STYLE = (
+    "body{font-family:sans-serif;max-width:56em;margin:1em auto;padding:0 1em}"
+    "table{border-collapse:collapse;width:100%}"
+    "td{padding:.25em .5em;border-bottom:1px solid #ddd}"
+    "td.s{text-align:right;white-space:nowrap;color:#666}"
+    "form{margin:1em 0;padding:.75em;border:1px solid #ccc}"
+)
+
+def human_readable(size):
+    for unit in ["B", "K", "M", "G", "T"]:
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}P"
+
+def safe_text(s):
+    """Text that the console can print (non-encodable characters escaped)."""
+    enc = sys.stdout.encoding or "utf-8"
+    try:
+        s.encode(enc)
+        return s
+    except UnicodeEncodeError:
+        return s.encode(enc, "backslashreplace").decode(enc)
+
+def usage():
+    section("Serve")
+    print("Usage: serve [--upload] [dir] [port]")
+    print("  dir        folder to share (default: current directory)")
+    print(f"  port       port to listen on (default: {DEFAULT_PORT}; the next free one is used if busy)")
+    print("  --upload   also allow uploading files into the shared folder")
+    print()
+    sys.exit(1)
+
+def parse_args():
+    args = sys.argv[1:]
+    upload = "--upload" in args
+    args = [a for a in args if a != "--upload"]
+    if len(args) > 2 or any(a.startswith("-") and not os.path.exists(a) for a in args):
+        usage()
+
+    # A single numeric argument that is not a folder is the port: "serve 9000"
+    if len(args) == 1 and args[0].isdigit() and not os.path.isdir(args[0]):
+        args = [".", args[0]]
+
+    directory = args[0] if args else "."
+    port = DEFAULT_PORT
+    if len(args) == 2:
+        try:
+            port = int(args[1])
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            section("Serve")
+            err(f"Invalid port: {args[1]}  (must be 1-65535)")
+            print()
+            sys.exit(1)
+    return directory, port, upload
+
+def lan_ips():
+    """IPv4 addresses other machines on the network can likely reach us at."""
+    ips = []
+    # Connecting a UDP socket sends nothing, but picks the outgoing interface
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ips.append(s.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        s.close()
+    try:
+        for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.append(entry[4][0])
+    except (socket.gaierror, UnicodeError):
+        pass
+
+    result = []
+    for ip in ips:
+        if ip.startswith(("127.", "169.254.", "0.")) or ip in result:
+            continue
+        result.append(ip)
+    return result
+
+# -- uploads -----------------------------------------------------------------
+
+class Body:
+    """Reads a request body of known length, with a small lookahead buffer."""
+    def __init__(self, rfile, length):
+        self.rfile = rfile
+        self.left = length
+        self.buf = b""
+
+    def fill(self):
+        if self.left <= 0:
+            return False
+        chunk = self.rfile.read(min(CHUNK, self.left))
+        if not chunk:
+            self.left = 0
+            return False
+        self.left -= len(chunk)
+        self.buf += chunk
+        return True
+
+    def take(self, n):
+        while len(self.buf) < n:
+            if not self.fill():
+                raise ValueError("Upload truncated")
+        data, self.buf = self.buf[:n], self.buf[n:]
+        return data
+
+    def until(self, delim, out):
+        """Pass everything before delim to out() in pieces, then consume delim."""
+        keep = len(delim) - 1
+        while True:
+            i = self.buf.find(delim)
+            if i >= 0:
+                out(self.buf[:i])
+                self.buf = self.buf[i + len(delim):]
+                return
+            if len(self.buf) > keep:
+                out(self.buf[:-keep])
+                self.buf = self.buf[-keep:]
+            if not self.fill():
+                raise ValueError("Upload truncated")
+
+def part_filename(raw_headers):
+    """File name from a multipart part's headers; None if the part is not a file."""
+    text = raw_headers.decode("utf-8", "replace")
+    for line in text.split("\r\n"):
+        name, _, value = line.partition(":")
+        if name.strip().lower() != "content-disposition":
+            continue
+        m = re.search(r"filename\*\s*=\s*utf-8''([^;]+)", value, re.I)
+        if m:
+            return urllib.parse.unquote(m.group(1).strip())
+        m = re.search(r'filename\s*=\s*"((?:[^"\\]|\\.)*)"', value, re.I)
+        if m:
+            return re.sub(r'\\(["\\])', r"\1", m.group(1))
+        m = re.search(r"filename\s*=\s*([^;]+)", value, re.I)
+        if m:
+            return m.group(1).strip()
+    return None
+
+def safe_name(name):
+    """Reduce a client-supplied file name to a harmless base name."""
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join("_" if c in BAD_NAME_CHARS or ord(c) < 32 else c for c in name)
+    name = name.strip().rstrip(". ")
+    return name or "upload"
+
+def open_unique(directory, name):
+    """Create a new file, adding ' (1)', ' (2)', ... instead of overwriting."""
+    stem, ext = os.path.splitext(name)
+    n = 0
+    while True:
+        candidate = name if n == 0 else f"{stem} ({n}){ext}"
+        path = os.path.join(directory, candidate)
+        try:
+            return candidate, path, open(path, "xb")
+        except FileExistsError:
+            n += 1
+
+def receive_files(rfile, length, boundary, directory, saved):
+    """Stream a multipart/form-data body to disk; append (name, size) to saved."""
+    body = Body(rfile, length)
+    delim = b"--" + boundary
+    body.until(delim, lambda _: None)            # skip the preamble
+    while True:
+        after = body.take(2)
+        if after == b"--":                       # closing delimiter
+            return
+        if after != b"\r\n":
+            raise ValueError("Malformed upload")
+
+        headers = []
+        def collect(data):
+            headers.append(data)
+            if sum(map(len, headers)) > MAX_PART_HEADERS:
+                raise ValueError("Upload part headers too large")
+        body.until(b"\r\n\r\n", collect)
+
+        filename = part_filename(b"".join(headers))
+        if not filename:                         # form field or empty file input
+            body.until(b"\r\n" + delim, lambda _: None)
+            continue
+
+        name, path, f = open_unique(directory, safe_name(filename))
+        size = [0]
+        def write(data):
+            f.write(data)
+            size[0] += len(data)
+        try:
+            body.until(b"\r\n" + delim, write)
+        except BaseException:
+            f.close()
+            os.remove(path)                      # drop the partial file
+            raise
+        f.close()
+        saved.append((name, size[0]))
+
+# -- server ------------------------------------------------------------------
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass                                     # replaced by log_request below
+
+    def log_request(self, code="-", size="-"):
+        self.server.count()
+        path = urllib.parse.unquote(getattr(self, "path", "") or "-")
+        method = getattr(self, "command", None) or "-"
+        code = getattr(code, "value", code)
+        line = f"{time.strftime('%H:%M:%S')}  {self.client_address[0]:<15}  {method} {path}  {code}"
+        info(safe_text(line))
+
+    def list_directory(self, path):
+        try:
+            names = os.listdir(path)
+        except OSError:
+            self.send_error(404, "No permission to list directory")
+            return None
+        names.sort(key=lambda n: (not os.path.isdir(os.path.join(path, n)), n.lower()))
+
+        url_path = self.path.split("?", 1)[0].split("#", 1)[0]
+        try:
+            display = urllib.parse.unquote(url_path, errors="surrogatepass")
+        except UnicodeDecodeError:
+            display = urllib.parse.unquote(url_path)
+        display = html.escape(display, quote=False)
+
+        r = ['<!DOCTYPE html>', '<html lang="en">', '<head>',
+             '<meta charset="utf-8">',
+             '<meta name="viewport" content="width=device-width, initial-scale=1">',
+             f'<title>{display}</title>', f'<style>{STYLE}</style>', '</head>',
+             '<body>', f'<h1>{display}</h1>']
+        if self.server.upload:
+            r.append('<form method="post" enctype="multipart/form-data">'
+                     '<input type="file" name="file" multiple> '
+                     '<button type="submit">Upload</button></form>')
+        r.append('<table>')
+        if url_path != "/":
+            r.append('<tr><td><a href="../">../</a></td><td class="s"></td></tr>')
+        for name in names:
+            full = os.path.join(path, name)
+            is_dir = os.path.isdir(full)
+            link = name + "/" if is_dir else name
+            label = link + ("@" if os.path.islink(full) else "")
+            size = ""
+            if not is_dir:
+                try:
+                    size = human_readable(os.path.getsize(full))
+                except OSError:
+                    pass
+            r.append('<tr><td><a href="%s">%s</a></td><td class="s">%s</td></tr>'
+                     % (urllib.parse.quote(link, errors="surrogatepass"),
+                        html.escape(label, quote=False), size))
+        r.append('</table>\n</body>\n</html>\n')
+
+        encoded = "\n".join(r).encode("utf-8", "surrogateescape")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        return io.BytesIO(encoded)
+
+    def do_POST(self):
+        if not self.server.upload:
+            self.send_error(405, "Uploads are disabled (start serve with --upload)")
+            return
+        directory = self.translate_path(self.path)
+        if not os.path.isdir(directory):
+            self.send_error(404, "Upload target is not a folder")
+            return
+        ctype = self.headers.get("Content-Type", "")
+        m = re.search(r'boundary=(?:"([^"]+)"|([^;\s]+))', ctype)
+        if not ctype.lower().startswith("multipart/form-data") or not m:
+            self.send_error(400, "Expected a multipart/form-data upload")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self.send_error(411, "Content-Length required")
+            return
+        boundary = (m.group(1) or m.group(2)).encode("latin-1", "replace")
+
+        saved = []
+        failure = None
+        try:
+            receive_files(self.rfile, length, boundary, directory, saved)
+        except ValueError as e:
+            failure = (400, str(e))
+        except OSError as e:
+            failure = (500, f"Could not save upload: {e.strerror or e}")
+
+        rel = os.path.relpath(directory, self.directory)
+        for name, size in saved:
+            where = name if rel == "." else os.path.join(rel, name)
+            ok(safe_text(f"{self.client_address[0]} uploaded {where} ({human_readable(size)})"))
+        self.server.uploaded(len(saved))
+
+        if failure:
+            self.close_connection = True         # unread body must not be parsed as a request
+            warn(safe_text(f"{self.client_address[0]} upload failed: {failure[1]}"))
+            self.send_error(*failure)
+            return
+
+        text = "Uploaded: " + ", ".join(n for n, _ in saved) + "\n" if saved else "No files received\n"
+        encoded = text.encode("utf-8")
+        self.send_response(303)                  # back to the listing in a browser
+        self.send_header("Location", self.path)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+class Server(http.server.ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets two servers share a port, which would hide "port busy"
+    allow_reuse_address = platform.system() != "Windows"
+
+    def __init__(self, address, handler, upload):
+        self.upload = upload
+        self.requests = 0
+        self.uploads = 0
+        self._lock = threading.Lock()
+        super().__init__(address, handler)
+
+    def server_bind(self):
+        # Skip HTTPServer.server_bind: its getfqdn() can stall for seconds on some networks
+        http.server.socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "localhost", self.server_address[1]
+
+    def count(self):
+        with self._lock:
+            self.requests += 1
+
+    def uploaded(self, n):
+        with self._lock:
+            self.uploads += n
+
+    def handle_error(self, request, client_address):
+        e = sys.exc_info()[1]
+        if isinstance(e, (ConnectionError, TimeoutError)):
+            return                               # client went away; not worth reporting
+        warn(f"{client_address[0]} request failed: {e}")
+
+def bind(directory, port, upload):
+    """Bind to the first free port from port on; returns the server."""
+    handler = functools.partial(Handler, directory=directory)
+    busy = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", None),
+            10013}                               # WSAEACCES: Windows reserved port range
+    for p in range(port, min(port + PORT_TRIES, 65536)):
+        try:
+            return Server(("", p), handler, upload)
+        except OSError as e:
+            if e.errno in busy and not (e.errno == errno.EACCES and p < 1024):
+                continue
+            if e.errno == errno.EACCES:
+                err(f"Permission denied for port {p}  (ports below 1024 need root; try 8000)")
+            else:
+                err(f"Could not listen on port {p}: {e.strerror or e}")
+            print()
+            sys.exit(1)
+    err(f"No free port in {port}-{p}")
+    print()
+    sys.exit(1)
+
+def main():
+    directory, port, upload = parse_args()
+    section("Serve")
+
+    if not os.path.isdir(directory):
+        err(f"Not a folder: {directory}")
+        print()
+        sys.exit(1)
+    directory = os.path.abspath(directory)
+
+    server = bind(directory, port, upload)
+    actual = server.server_address[1]
+
+    info(f"Sharing {directory}")
+    if upload:
+        info("Uploads enabled (files are never overwritten)")
+    if actual != port:
+        warn(f"Port {port} is in use, using {actual}")
+    print()
+    ips = lan_ips()
+    for ip in ips:
+        ok(f"http://{ip}:{actual}/")
+    ok(f"http://localhost:{actual}/")
+    if not ips:
+        warn("No LAN address found; only this machine can connect")
+    print()
+    warn("Anyone on this network can " + ("read and add files" if upload else "read these files"))
+    if platform.system() == "Windows":
+        info("Windows Firewall may ask whether to allow Python on this network")
+    info("Press Ctrl+C to stop")
+    print()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+    print()
+    summary = f"Stopped. {server.requests} request{'' if server.requests == 1 else 's'}"
+    if upload:
+        summary += f", {server.uploads} file{'' if server.uploads == 1 else 's'} uploaded"
+    ok(summary)
+    print()
+
+if __name__ == "__main__":
+    main()

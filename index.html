@@ -69,6 +69,25 @@ SCRIPTS = {
             }
         ]
     },
+    "serve": {
+        "description": "Share a folder on the local network over HTTP",
+        "usage": "serve [--upload] [dir] [port]",
+        "url": BASE_URL + "serve",
+        "args": [
+            {
+                "name": "--upload",
+                "description": "Optional: Also allow uploading files into the shared folder (never overwrites)"
+            },
+            {
+                "name": "dir",
+                "description": "Optional: Folder to share (default: current directory)"
+            },
+            {
+                "name": "port",
+                "description": "Optional: Port to listen on (default: 8000, next free port if busy)"
+            }
+        ]
+    },
     "search": {
         "description": "Fuzzy search large text files",
         "usage": 'search <file> "<query>" [top_k]',
