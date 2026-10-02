@@ -66,7 +66,7 @@ SCRIPTS = {
     },
     "search": {
         "description": "Fuzzy search large text files",
-        "usage": 'search <file> "<query>"',
+        "usage": 'search <file> "<query>" [top_k]',
         "url": BASE_URL + "search",
         "args": [
             {
@@ -75,7 +75,11 @@ SCRIPTS = {
             },
             {
                 "name": "query",
-                "description": "The phrase or concept to search for"
+                "description": "The phrase or concept to search for (typo-tolerant)"
+            },
+            {
+                "name": "top_k",
+                "description": "Optional: Number of results to show (default: 5)"
             }
         ]
     },

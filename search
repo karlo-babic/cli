@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Search: Semantic full-text search over a plain-text file using TF-IDF and fuzzy matching.
-Usage: search <file> "<query>"
+Usage: search <file> "<query>" [top_k]
 """
 
 import os
@@ -60,7 +60,7 @@ def build_idf(filepath):
     df = Counter()
     total_paragraphs = 0
     
-    for para in read_paragraphs(filepath):
+    for _, para in read_paragraphs(filepath):
         total_paragraphs += 1
         unique_words = set(tokenize(para))
         for w in unique_words:
@@ -89,18 +89,21 @@ def cosine_sim(vec1, vec2):
     return sum(vec1[w] * vec2[w] for w in common)
 
 def read_paragraphs(filepath):
-    """Yield paragraphs from a file with error handling for large/weird files."""
+    """Yield (start_line, paragraph) from a file, handling large/weird files."""
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         paragraph = []
-        for line in f:
+        start_line = 0
+        for lineno, line in enumerate(f, 1):
             if line.strip() == '':
                 if paragraph:
-                    yield ' '.join(paragraph).strip()
+                    yield start_line, ' '.join(paragraph).strip()
                     paragraph = []
             else:
+                if not paragraph:
+                    start_line = lineno
                 paragraph.append(line.strip())
         if paragraph:
-            yield ' '.join(paragraph).strip()
+            yield start_line, ' '.join(paragraph).strip()
 
 def levenshtein_ratio(s1, s2):
     """Optimized Levenshtein distance using only two rows of memory."""
@@ -124,17 +127,78 @@ def levenshtein_ratio(s1, s2):
 
 COLOR_ENABLED = _C
 
+FUZZY_MIN_LEN = 4        # shorter query words only match exactly
+FUZZY_MAX_EXPANSIONS = 5 # closest vocabulary terms used per query word
+SNIPPET_CHARS = 600      # max characters shown per result
+
+def fuzzy_terms(term, idf_dict, threshold):
+    """Return up to FUZZY_MAX_EXPANSIONS (vocab_term, similarity) pairs close to term."""
+    max_diff = int(len(term) * (1 - threshold) / threshold)
+    matches = []
+    for cand in idf_dict:
+        if cand == term or abs(len(cand) - len(term)) > max_diff:
+            continue
+        sim = levenshtein_ratio(term, cand)
+        if sim >= threshold:
+            matches.append((sim, cand))
+    matches.sort(reverse=True)
+    return [(cand, sim) for sim, cand in matches[:FUZZY_MAX_EXPANSIONS]]
+
+def build_query_vector(query, idf_dict, threshold):
+    """
+    TF-IDF query vector where each query word also contributes to close
+    vocabulary terms (typos, other word forms), weighted by similarity.
+    Returns (vector, {query_word: [expanded terms]}).
+    """
+    tf = Counter(tokenize(query))
+    vec, expansions = {}, {}
+    for q, count in tf.items():
+        matches = [(q, 1.0)] if q in idf_dict else []
+        if len(q) >= FUZZY_MIN_LEN:
+            fuzzy = fuzzy_terms(q, idf_dict, threshold)
+            if fuzzy:
+                expansions[q] = [t for t, _ in fuzzy]
+            matches += fuzzy
+        for t, sim in matches:
+            vec[t] = max(vec.get(t, 0.0), count * idf_dict[t] * sim)
+    norm = math.sqrt(sum(v*v for v in vec.values())) or 1.0
+    return {w: v/norm for w, v in vec.items()}, expansions
+
+def is_query_match(word_lower, raw_query_words, threshold):
+    return any(levenshtein_ratio(word_lower, q) >= threshold for q in raw_query_words)
+
+def make_snippet(text, raw_query_words, threshold):
+    """Cut text to SNIPPET_CHARS, centred on the region with the most matches."""
+    if len(text) <= SNIPPET_CHARS:
+        return text
+    hits = [m.start() for m in re.finditer(r'\b[A-Za-z0-9]+\b', text)
+            if is_query_match(m.group(0).lower(), raw_query_words, threshold)]
+    best_start, best_count = 0, -1
+    for h in hits or [0]:
+        start = max(0, min(h - SNIPPET_CHARS // 4, len(text) - SNIPPET_CHARS))
+        count = sum(1 for x in hits if start <= x < start + SNIPPET_CHARS)
+        if count > best_count:
+            best_start, best_count = start, count
+    end = best_start + SNIPPET_CHARS
+    # snap to word boundaries
+    if best_start > 0:
+        sp = text.find(' ', best_start)
+        best_start = sp + 1 if 0 <= sp < best_start + 40 else best_start
+    if end < len(text):
+        sp = text.rfind(' ', best_start, end)
+        end = sp if sp > end - 40 else end
+    return (("... " if best_start > 0 else "") + text[best_start:end].strip()
+            + (" ..." if end < len(text) else ""))
+
 def highlight_fuzzy(text, raw_query_words, threshold=0.75):
     """Highlight words in text with ANSI colors or brackets if unsupported."""
     def repl(match):
         word = match.group(0)
-        word_lower = word.lower()
-        for q in raw_query_words:
-            if levenshtein_ratio(word_lower, q) >= threshold:
-                if COLOR_ENABLED:
-                    return f"\033[93m{word}\033[0m"
-                else:
-                    return f"**{word}**" 
+        if is_query_match(word.lower(), raw_query_words, threshold):
+            if COLOR_ENABLED:
+                return f"\033[93m{word}\033[0m"
+            else:
+                return f"**{word}**"
         return word
     return re.sub(r'\b[A-Za-z0-9]+\b', repl, text)
 
@@ -142,54 +206,69 @@ def search(query, filepath, top_k=5, fuzzy_threshold=0.75):
     info("Building index (pass 1)...")
     idf_dict = build_idf(filepath)
 
-    query_vec = get_vector(query, idf_dict)
-    raw_query_words = re.findall(r'[a-z0-9]+', query.lower())
+    query_vec, expansions = build_query_vector(query, idf_dict, fuzzy_threshold)
+    for q, terms in expansions.items():
+        info(f"Fuzzy: {q} -> {', '.join(terms)}")
+    raw_query_words = [w for w in re.findall(r'[a-z0-9]+', query.lower())
+                       if w not in STOP_WORDS]
+    if not query_vec:
+        return []
 
     top_results_heap = []
     tie_breaker = 0
 
     info("Searching document (pass 2)...")
-    for paragraph in read_paragraphs(filepath):
+    for line, paragraph in read_paragraphs(filepath):
         para_vec = get_vector(paragraph, idf_dict)
         if not para_vec:
             continue
-            
+
         score = cosine_sim(query_vec, para_vec)
-        
+
         if score > 0:
+            item = (score, tie_breaker, line, paragraph)
+            tie_breaker += 1
             if len(top_results_heap) < top_k:
-                heapq.heappush(top_results_heap, (score, tie_breaker, paragraph))
-                tie_breaker += 1
-            else:
-                if score > top_results_heap[0][0]:
-                    heapq.heappushpop(top_results_heap, (score, tie_breaker, paragraph))
-                    tie_breaker += 1
+                heapq.heappush(top_results_heap, item)
+            elif score > top_results_heap[0][0]:
+                heapq.heappushpop(top_results_heap, item)
 
     top_results_heap.sort(reverse=True)
-    
+
     results = []
-    for score, _, paragraph in top_results_heap:
-        highlighted = highlight_fuzzy(paragraph, raw_query_words, fuzzy_threshold)
-        results.append((score, highlighted))
+    for score, _, line, paragraph in top_results_heap:
+        snippet = make_snippet(paragraph, raw_query_words, fuzzy_threshold)
+        highlighted = highlight_fuzzy(snippet, raw_query_words, fuzzy_threshold)
+        results.append((score, line, highlighted))
     return results
 
 def main():
     section("Fuzzy File Search")
 
-    if len(sys.argv) != 3:
-        print("Usage: search <file> \"<query>\"")
+    if len(sys.argv) not in (3, 4):
+        print("Usage: search <file> \"<query>\" [top_k]")
         print()
         sys.exit(1)
 
     filepath = sys.argv[1]
     query = sys.argv[2]
+    top_k = 5
+    if len(sys.argv) == 4:
+        try:
+            top_k = int(sys.argv[3])
+            if top_k < 1:
+                raise ValueError
+        except ValueError:
+            err(f"top_k must be a positive integer, got: {sys.argv[3]}")
+            print()
+            sys.exit(1)
 
     if not os.path.exists(filepath):
         err(f"File not found: {filepath}")
         print()
         sys.exit(1)
 
-    results = search(query, filepath)
+    results = search(query, filepath, top_k)
 
     if not results:
         warn("No matching results found.")
@@ -197,8 +276,8 @@ def main():
         return
 
     section("Search Results")
-    for idx, (score, r) in enumerate(results, 1):
-        print(f"\n[{idx}] (score: {score:.3f})\n{r}")
+    for idx, (score, line, r) in enumerate(results, 1):
+        print(f"\n[{idx}] line {line} (score: {score:.3f})\n{r}")
     print()
 
 if __name__ == "__main__":
