@@ -34,7 +34,14 @@ IGNORED_EXTENSIONS = {
     ".pdf", ".mp4", ".mp3", ".bak"
 }
 
-MAX_FILE_LINES = 10000  # truncation limit
+# lockfiles: huge and rarely useful; skipped ONLY if no extensions are provided
+IGNORED_FILENAMES = {
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb",
+    "poetry.lock", "Pipfile.lock", "uv.lock", "pdm.lock",
+    "Cargo.lock", "composer.lock", "Gemfile.lock", "go.sum", "flake.lock"
+}
+
+MAX_FILE_SIZE = 1024 * 1024  # truncation limit per file (1 MB)
 
 
 def is_valid_file(filepath, allowed_extensions):
@@ -45,8 +52,9 @@ def is_valid_file(filepath, allowed_extensions):
         # If specific extensions were provided, ONLY allow those
         return ext in allowed_extensions
     else:
-        # Otherwise, allow everything EXCEPT the ignored list
-        return ext not in IGNORED_EXTENSIONS
+        # Otherwise, allow everything EXCEPT the ignored lists
+        return (ext not in IGNORED_EXTENSIONS
+                and os.path.basename(filepath) not in IGNORED_FILENAMES)
 
 
 def is_binary(filepath):
@@ -78,55 +86,90 @@ def clone_repository(url, dest_dir):
         sys.exit(1)
 
 
-def collect_files(root_dir, allowed_extensions, exclude_path=None):
-    file_paths = []
+def git_list_files(root_dir):
+    """
+    Return paths (relative to root_dir) that git would track: committed files
+    plus untracked ones not excluded by .gitignore. None if not a git repo or
+    git is unavailable.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", root_dir, "ls-files", "-z",
+             "--cached", "--others", "--exclude-standard"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    paths = [p for p in out.decode("utf-8", errors="replace").split("\0") if p]
+    # Empty: root_dir is itself git-ignored inside a parent repo; walk it instead
+    return paths or None
 
+
+def walk_files(root_dir):
+    """Return all file paths (relative to root_dir), skipping IGNORED_DIRS."""
+    paths = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
         # Filter directories in-place
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
-
         for filename in filenames:
-            full_path = os.path.join(dirpath, filename)
+            paths.append(os.path.relpath(os.path.join(dirpath, filename), root_dir))
+    return paths
 
-            # Never bundle the output file into itself (e.g. on a re-run)
-            if exclude_path and os.path.abspath(full_path) == exclude_path:
-                continue
 
-            # Skip if extension not allowed or file is binary
-            if not is_valid_file(full_path, allowed_extensions) or is_binary(full_path):
-                continue
+def collect_files(root_dir, allowed_extensions, exclude_path=None):
+    file_paths = []
 
-            rel_path = os.path.relpath(full_path, root_dir)
-            rel_path = rel_path.replace("\\", "/")  # normalize
+    candidates = git_list_files(root_dir)
+    if candidates is not None:
+        info("Git repository detected. Respecting .gitignore.")
+    else:
+        candidates = walk_files(root_dir)
 
-            file_paths.append((rel_path, full_path))
+    for rel_path in candidates:
+        rel_path = rel_path.replace("\\", "/")  # normalize
+        if any(part in IGNORED_DIRS for part in rel_path.split("/")[:-1]):
+            continue
+
+        full_path = os.path.join(root_dir, rel_path)
+
+        # Tracked files deleted from the working tree, submodule dirs, etc.
+        if not os.path.isfile(full_path):
+            continue
+
+        # Never bundle the output file into itself (e.g. on a re-run)
+        if exclude_path and os.path.abspath(full_path) == exclude_path:
+            continue
+
+        # Skip if extension not allowed or file is binary
+        if not is_valid_file(full_path, allowed_extensions) or is_binary(full_path):
+            continue
+
+        file_paths.append((rel_path, full_path))
 
     return sorted(file_paths)
 
 
 def read_file_with_limit(filepath):
-    lines = []
-    truncated = False
-
     try:
+        truncated = os.path.getsize(filepath) > MAX_FILE_SIZE
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            for i, line in enumerate(f):
-                if i >= MAX_FILE_LINES:
-                    truncated = True
-                    break
-                lines.append(line)
+            content = f.read(MAX_FILE_SIZE)
     except Exception as e:
         return f"[ERROR READING FILE: {e}]\n", False
 
-    content = "".join(lines)
-
     if truncated:
-        content += "\n[FILE TRUNCATED: exceeds max line limit]\n"
+        content += "\n[FILE TRUNCATED: exceeds 1 MB size limit]\n"
 
     return content, truncated
 
 
+def format_tokens(n):
+    return f"{n / 1_000_000:.1f}M" if n >= 1_000_000 else f"{n / 1000:.0f}k" if n >= 1000 else str(n)
+
+
 def write_output(source_name, files, output_file):
+    """Write the bundle; return the list of truncated file paths."""
+    truncated_files = []
     try:
         with open(output_file, "w", encoding="utf-8") as out:
 
@@ -146,6 +189,8 @@ def write_output(source_name, files, output_file):
             # file contents
             for rel_path, full_path in files:
                 content, truncated = read_file_with_limit(full_path)
+                if truncated:
+                    truncated_files.append(rel_path)
 
                 out.write("===== FILE START =====\n")
                 out.write(f"PATH: {rel_path}\n")
@@ -160,6 +205,7 @@ def write_output(source_name, files, output_file):
         err(f"Error writing to output file: {e}")
         print()
         sys.exit(1)
+    return truncated_files
 
 
 def main():
@@ -210,9 +256,14 @@ def main():
             info("No extension list provided. Using default exclusion list.")
 
         files = collect_files(root_dir, allowed_extensions, os.path.abspath(output_file))
-        write_output(source_name, files, output_file)
+        truncated_files = write_output(source_name, files, output_file)
+        for rel_path in truncated_files:
+            warn(f"Truncated (over 1 MB): {rel_path}")
 
-        ok(f"Done. Exported {len(files)} files to {output_file}")
+        # Rough LLM token estimate: ~4 characters per token
+        with open(output_file, "r", encoding="utf-8", errors="replace") as f:
+            tokens = len(f.read()) // 4
+        ok(f"Done. Exported {len(files)} files (~{format_tokens(tokens)} tokens) to {output_file}")
         print()
 
 
